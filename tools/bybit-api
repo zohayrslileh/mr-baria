@@ -82,7 +82,9 @@ def request(method, path, params=None, key=None, secret=None):
         with urllib.request.urlopen(req, timeout=30) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:300]
+        # match against the whole body; CloudFront's reason sits well past the
+        # first few hundred characters of boilerplate HTML
+        detail = exc.read().decode(errors="replace")
         # Two different 403s arrive from CloudFront and they mean opposite things.
         if exc.code == 403 and "CloudFront" in detail:
             if "your country" in detail:
@@ -95,8 +97,8 @@ def request(method, path, params=None, key=None, secret=None):
                          "hostname instead of rewriting it. For ngrok use "
                          "--host-header=rewrite; for nginx set "
                          "proxy_set_header Host api.bybit.com. Not a geo block.")
-            sys.exit("403 from CloudFront: %s" % detail)
-        sys.exit("HTTP %s: %s" % (exc.code, detail))
+            sys.exit("403 from CloudFront: %s" % detail[:300])
+        sys.exit("HTTP %s: %s" % (exc.code, detail[:300]))
 
 
 def check(response):
