@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Turn a symbol and a direction into a correctly sized, ready-to-review order.
+
+    tools/plan-trade --symbol BTCUSDT --side Buy [--risk-pct 1] [--atr-stop 1.5] [--rr 2]
+
+You choose the direction. This does the arithmetic: pulls live equity from the
+account, ATR from the bmo instance, and the exchange's own quantity step and
+minimum order size, then sizes the position so that price reaching the stop
+costs exactly the intended fraction of equity.
+
+Direction is deliberately not automated. The screen's ranking was tested against
+forward returns and its sign flips between halves of the sample — see
+docs/trading-notes.md — so it is not a basis for picking a side. The sizing
+arithmetic below holds regardless of where the view comes from.
+
+Nothing is sent. It prints the tools/bybit-api command to run.
+
+Everything comes from Bybit's own V5 API, so this needs only the one
+connection that places orders — no dependency on the bmo instance.
+
+Environment: BYBIT_API_BASE, BYBIT_CRED_DIR
+"""
+
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import sys
+import time
+import urllib.parse
+import urllib.request
+from decimal import Decimal, ROUND_DOWN
+
+# bmo interval names to the codes V5 expects
+INTERVALS = {"1m": "1", "5m": "5", "15m": "15", "30m": "30",
+             "1h": "60", "2h": "120", "4h": "240", "6h": "360",
+             "12h": "720", "1d": "D", "1w": "W"}
+
+
+def bybit_public(path, params):
+    """Unsigned V5 endpoint, through the same base as the signed calls."""
+    base = os.environ.get("BYBIT_API_BASE", "https://api.bybit.com")
+    url = base + path + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"ngrok-skip-browser-warning": "1"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        body = json.load(response)
+    if body.get("retCode") != 0:
+        sys.exit("bybit error %s: %s" % (body.get("retCode"), body.get("retMsg")))
+    return body["result"]
+
+
+def wilder_atr(candles, period=14):
+    """Wilder's ATR over [open, high, low, close] rows, oldest first."""
+    atr = None
+    previous_close = None
+    for _, high, low, close in candles:
+        true_range = high - low if previous_close is None else max(
+            high - low, abs(high - previous_close), abs(low - previous_close))
+        atr = true_range if atr is None else (
+            atr * (period - 1) + true_range) / period
+        previous_close = close
+    return atr
+
+
+def bybit_get(path, params):
+    cred_dir = os.environ.get("BYBIT_CRED_DIR") or os.path.expanduser("~/.bybit")
+    with open(os.path.join(cred_dir, "oauth_token.json")) as fh:
+        account = json.load(fh)["ai-account"]
+    key, secret = account["api_key"], account["api_secret"]
+    base = os.environ.get("BYBIT_API_BASE", "https://api.bybit.com")
+
+    qs = urllib.parse.urlencode(params)
+    ts = str(int(time.time() * 1000))
+    recv = "5000"
+    sign = hmac.new(secret.encode(), (ts + key + recv + qs).encode(),
+                    hashlib.sha256).hexdigest()
+    req = urllib.request.Request(
+        base + path + ("?" + qs if qs else ""),
+        headers={"X-BAPI-API-KEY": key, "X-BAPI-SIGN": sign,
+                 "X-BAPI-TIMESTAMP": ts, "X-BAPI-RECV-WINDOW": recv,
+                 "ngrok-skip-browser-warning": "1"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        body = json.load(response)
+    if body.get("retCode") != 0:
+        sys.exit("bybit error %s: %s" % (body.get("retCode"), body.get("retMsg")))
+    return body["result"]
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--symbol", required=True)
+    p.add_argument("--side", required=True, choices=["Buy", "Sell"])
+    p.add_argument("--risk-pct", type=float, default=1.0)
+    p.add_argument("--atr-stop", type=float, default=1.5)
+    p.add_argument("--rr", type=float, default=2.0)
+    p.add_argument("--interval", default="4h")
+    args = p.parse_args()
+
+    equity = Decimal(bybit_get("/v5/account/wallet-balance",
+                               {"accountType": "UNIFIED"})["list"][0]["totalEquity"])
+    budget = equity * Decimal(str(args.risk_pct)) / 100
+
+    instrument = bybit_public("/v5/market/instruments-info",
+                              {"category": "linear", "symbol": args.symbol})["list"][0]
+    lot = instrument["lotSizeFilter"]
+    step = Decimal(lot["qtyStep"])
+    min_qty = Decimal(lot["minOrderQty"])
+    min_notional = Decimal(lot.get("minNotionalValue") or "0")
+    tick = Decimal(instrument["priceFilter"]["tickSize"])
+
+    # V5 returns candles newest first; ATR needs them oldest first
+    rows = bybit_public("/v5/market/kline",
+                        {"category": "linear", "symbol": args.symbol,
+                         "interval": INTERVALS.get(args.interval, args.interval),
+                         "limit": 200})["list"]
+    candles = [(Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4]))
+               for r in reversed(rows)]
+    price = candles[-1][3]
+    atr = wilder_atr(candles)
+    atr_pct = (atr / price * 100).quantize(Decimal("0.001"))
+
+    stop_distance = Decimal(str(args.atr_stop)) * atr
+    long = args.side == "Buy"
+    stop = price - stop_distance if long else price + stop_distance
+    target = (price + Decimal(str(args.rr)) * stop_distance if long
+              else price - Decimal(str(args.rr)) * stop_distance)
+
+    ideal = budget / stop_distance
+    qty = (ideal / step).to_integral_value(ROUND_DOWN) * step
+    forced = qty < min_qty
+    if forced:
+        qty = min_qty
+
+    actual_risk = qty * stop_distance
+    notional = qty * price
+
+    def q(value, unit):
+        return value.quantize(unit, rounding=ROUND_DOWN)
+
+    print("%s  %s" % (args.symbol, args.side.upper()))
+    print("  equity           %s   risking %s%% = %s" % (
+        equity, args.risk_pct, q(budget, Decimal("0.01"))))
+    print("  price            %s   ATR(%s) %s (%s%%)" % (
+        price, args.interval, atr.quantize(tick), atr_pct))
+    print("  stop             %s   (%s ATR = %s away)" % (
+        q(stop, tick), args.atr_stop, q(stop_distance, tick)))
+    print("  target           %s   (%s:1)" % (q(target, tick), args.rr))
+    print("  quantity         %s   notional %s   leverage %sx" % (
+        qty, q(notional, Decimal("0.01")),
+        q(notional / equity, Decimal("0.01")) if equity else "-"))
+    print("  risk if stopped  %s  (%s%% of equity)" % (
+        q(actual_risk, Decimal("0.01")),
+        q(actual_risk / equity * 100, Decimal("0.01")) if equity else "-"))
+
+    if forced:
+        print("\n  ! exchange minimum %s forced the size up; risk exceeds the budget"
+              % min_qty)
+    if min_notional and notional < min_notional:
+        print("\n  ! notional below the exchange minimum %s — this order would be rejected"
+              % min_notional)
+    if notional > equity * 5:
+        print("\n  ! leverage above 5x")
+
+    print("\nreview, then run:\n")
+    print("  tools/bybit-api order --symbol %s --side %s --qty %s \\\n"
+          "                        --stop %s --take-profit %s --yes"
+          % (args.symbol, args.side, qty, q(stop, tick), q(target, tick)))
+
+
+if __name__ == "__main__":
+    main()
