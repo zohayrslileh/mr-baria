@@ -47,6 +47,10 @@ queries/bybit-perp-scan.bmo      Bybit USDT perp screen, ATR-sized
 queries/factor-validation.bmo    do the screen factors predict anything?
 queries/factor-robustness.bmo    same factors, split by time
 docs/trading-notes.md            what the screen survived, and what it did not
+docs/bybit-connect.md            OAuth AI sub-account setup, and the geo-block
+tools/bybit-api                  signed Bybit V5 client, dry-run by default
+tools/snapshot                   append the screen to the out-of-sample journal
+tools/forward-test               score that journal against what happened
 ```
 
 ## Running a query

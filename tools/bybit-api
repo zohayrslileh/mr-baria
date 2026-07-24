@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Signed Bybit V5 client for the OAuth AI sub-account.
+
+    tools/bybit-api balance
+    tools/bybit-api positions
+    tools/bybit-api order --symbol BTCUSDT --side Buy --qty 0.005 [--price 64000]
+                          --stop 63000 [--reduce-only] --yes
+
+Credentials are read from the OAuth credential file and never printed. Set
+BYBIT_CRED_DIR to the directory holding oauth_token.json (the same variable the
+Bybit oauth module uses); it defaults to ~/.bybit.
+
+Orders require an explicit --yes. Without it the command prints exactly what it
+would send and exits without touching the account.
+
+Note on geography: Bybit's trading API (api.bybit.com and every alternate host)
+is served through CloudFront and refuses requests from blocked regions with a
+403. OAuth on api2.bybit.com may still succeed from such a region, so a
+working authorization does not imply a working trading connection. Run this
+from a machine that can reach api.bybit.com.
+"""
+
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BASE = os.environ.get("BYBIT_API_BASE", "https://api.bybit.com")
+RECV_WINDOW = "5000"
+
+
+def load_credentials():
+    cred_dir = os.environ.get("BYBIT_CRED_DIR") or os.path.expanduser("~/.bybit")
+    path = os.path.join(cred_dir, "oauth_token.json")
+    if not os.path.exists(path):
+        sys.exit("no credential file at %s — run the OAuth flow first" % path)
+    with open(path) as fh:
+        data = json.load(fh)
+    account = data.get("ai-account")
+    if not account or not account.get("api_key"):
+        sys.exit("credential file has no ai-account block — finish sub-account selection")
+    return account["api_key"], account["api_secret"]
+
+
+def request(method, path, params=None, key=None, secret=None):
+    params = params or {}
+    timestamp = str(int(time.time() * 1000))
+
+    if method == "GET":
+        payload = urllib.parse.urlencode(params)
+        url = BASE + path + ("?" + payload if payload else "")
+        body = None
+    else:
+        payload = json.dumps(params, separators=(",", ":"))
+        url = BASE + path
+        body = payload.encode()
+
+    signature = hmac.new(
+        secret.encode(), (timestamp + key + RECV_WINDOW + payload).encode(),
+        hashlib.sha256).hexdigest()
+
+    headers = {
+        "X-BAPI-API-KEY": key,
+        "X-BAPI-SIGN": signature,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+    }
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:300]
+        if exc.code == 403 and "CloudFront" in detail:
+            sys.exit("403 from CloudFront — this region is blocked from Bybit's "
+                     "trading API. The credentials are fine; the network path is not.")
+        sys.exit("HTTP %s: %s" % (exc.code, detail))
+
+
+def check(response):
+    if response.get("retCode") != 0:
+        sys.exit("bybit error %s: %s" % (response.get("retCode"), response.get("retMsg")))
+    return response.get("result", {})
+
+
+def cmd_balance(args, key, secret):
+    result = check(request("GET", "/v5/account/wallet-balance",
+                           {"accountType": "UNIFIED"}, key, secret))
+    for account in result.get("list", []):
+        print("equity %s   available %s" % (
+            account.get("totalEquity"), account.get("totalAvailableBalance")))
+        for coin in account.get("coin", []):
+            if float(coin.get("walletBalance") or 0):
+                print("  %-8s %s" % (coin["coin"], coin["walletBalance"]))
+
+
+def cmd_positions(args, key, secret):
+    result = check(request("GET", "/v5/position/list",
+                           {"category": "linear", "settleCoin": "USDT"}, key, secret))
+    rows = result.get("list", [])
+    if not rows:
+        print("no open positions")
+        return
+    print("%-12s %-5s %12s %12s %12s" % (
+        "symbol", "side", "size", "entry", "unrealised"))
+    for p in rows:
+        print("%-12s %-5s %12s %12s %12s" % (
+            p["symbol"], p["side"], p["size"], p["avgPrice"], p["unrealisedPnl"]))
+
+
+def cmd_order(args, key, secret):
+    order = {
+        "category": "linear",
+        "symbol": args.symbol,
+        "side": args.side,
+        "orderType": "Limit" if args.price else "Market",
+        "qty": str(args.qty),
+    }
+    if args.price:
+        order["price"] = str(args.price)
+        order["timeInForce"] = "GTC"
+    if args.stop:
+        order["stopLoss"] = str(args.stop)
+    if args.take_profit:
+        order["takeProfit"] = str(args.take_profit)
+    if args.reduce_only:
+        order["reduceOnly"] = True
+
+    print(json.dumps(order, indent=2))
+    if not args.yes:
+        print("\ndry run — nothing sent. Re-run with --yes to place it.")
+        return
+
+    result = check(request("POST", "/v5/order/create", order, key, secret))
+    print("placed  orderId=%s" % result.get("orderId"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("balance")
+    sub.add_parser("positions")
+
+    order = sub.add_parser("order")
+    order.add_argument("--symbol", required=True)
+    order.add_argument("--side", required=True, choices=["Buy", "Sell"])
+    order.add_argument("--qty", required=True)
+    order.add_argument("--price", help="omit for a market order")
+    order.add_argument("--stop", help="stop-loss trigger price")
+    order.add_argument("--take-profit")
+    order.add_argument("--reduce-only", action="store_true")
+    order.add_argument("--yes", action="store_true",
+                       help="actually send it; without this the order is only printed")
+
+    args = parser.parse_args()
+    key, secret = load_credentials()
+    {"balance": cmd_balance, "positions": cmd_positions, "order": cmd_order}[args.command](
+        args, key, secret)
+
+
+if __name__ == "__main__":
+    main()
