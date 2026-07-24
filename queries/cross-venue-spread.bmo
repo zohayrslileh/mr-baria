@@ -1,0 +1,40 @@
+# Same instrument, three venues: where is it cheapest, and by how much.
+#
+# Two ways to combine venues. Chained `align` works but gets unwieldy past two
+# sides and forces you to keep unwrapping [left, right]. Tagging each table
+# with its venue and folding them into one long table is flatter and scales to
+# any number of venues — `group` then does the per-timestamp comparison.
+#
+# `union` requires identical schemas and column order, which is why each side
+# is projected down to exactly [t, venue, px] first.
+
+[binance, okx, bybit]:
+    (@binance "spot.klines", symbol: "BTCUSDT", interval: "1h", limit: 48)
+  & (@okx     "market.candles", instrument_id: "BTC-USDT", interval: "1H", limit: 48)
+  & (@bybit   "market.klines", category: "spot", symbol: "BTCUSDT",
+              interval: "1h", limit: 48);
+
+tag: (candles, venue) => (
+    candles
+    | extend venue: venue
+    | select open_time: "t", venue: "venue", close: "px"
+);
+
+tag(binance, "binance")
+| union tag(okx, "okx"), tag(bybit, "bybit")
+
+| group "t"
+| extend
+    venues:   (g) => g.rows::count(),
+    high:     (g) => g.rows::max("px"),
+    low:      (g) => g.rows::min("px"),
+    richest:  (g) => (g.rows | sort "px" | take last: 1)::first().venue,
+    cheapest: (g) => (g.rows | sort "px" | take 1)::first().venue
+
+# drop timestamps where a venue is missing, so the spread compares like with like
+| where (r) => r.venues = 3
+| extend spread_bps: (r) => round((r.high - r.low) / r.low * 10000, 2)
+
+| rename key: "t"
+| select "t", "low", "high", "spread_bps", "cheapest", "richest"
+| sort "t"

@@ -1,0 +1,30 @@
+# 20-period Bollinger bands and hourly returns.
+#
+# `rolling` is the right stage here: its cost is O(n × outputs) and does not
+# grow with the window width, unlike a `window` callback that would rebuild a
+# 20-row frame per row. `minimum: 20` suppresses the warm-up rows instead of
+# reporting statistics computed from a partial frame.
+
+@binance "spot.klines", symbol: "BTCUSDT", interval: "1h", limit: 200
+| sort "open_time"
+
+| window 1, 0,
+    pc: (before, row, after) => list(before)?[0]?.close
+| extend
+    return_pct: (r) => r.pc = null then null
+                       else round((r.close - r.pc) / r.pc * 100, 6)
+
+| rolling 20, "close",
+    outputs: [sma: "avg", sd: "stddev"],
+    minimum: 20,
+    kind: "sample"
+
+| extend
+    upper: (r) => r.sma = null then null else round(r.sma + 2 * r.sd, 2),
+    lower: (r) => r.sma = null then null else round(r.sma - 2 * r.sd, 2),
+    # position within the band: 0 at the lower band, 1 at the upper
+    percent_b: (r) => (r.sma = null or r.sd = 0) then null
+                      else round((r.close - (r.sma - 2 * r.sd)) / (4 * r.sd), 4)
+
+| select "open_time", "close", "return_pct", "sma", "lower", "upper", "percent_b"
+| take last: 30

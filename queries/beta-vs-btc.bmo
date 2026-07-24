@@ -1,0 +1,41 @@
+# Correlation, beta and R² of each altcoin against BTC, on 7 days of hourly
+# returns.
+#
+# Returns must be aligned before they can be compared: a missing candle on one
+# side would otherwise shift every later pair. `align … kind: "inner"` keeps
+# only timestamps present on both sides, which is what the paired statistics
+# functions require.
+#
+# `linear_regression(x, y)` fits y on x and returns count, slope, intercept and
+# r_squared in one pass, so beta and R² come from a single call.
+
+returns: (symbol) => (
+    (@binance "spot.klines", symbol: symbol, interval: "1h", limit: 168)
+    | sort "open_time"
+    | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+    | where "pc"
+    | extend r: (x) => round((x.close - x.pc) / x.pc, 8)
+    | select "open_time", "r"
+);
+
+alts: ["ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+       "DOGEUSDT", "ADAUSDT", "LINKUSDT"];
+
+btc: returns("BTCUSDT");
+
+table(parallel(alts::map(alt => () => {
+    paired:
+        returns(alt)
+        | align btc, "open_time", kind: "inner"
+        | extend alt: (x) => x.left.r, btc: (x) => x.right.r
+        | select "alt", "btc";
+
+    fit: paired::linear_regression("btc", "alt");
+
+    [ symbol:      alt,
+      observations: paired::count(),
+      correlation:  round(paired::correlation("btc", "alt"), 4),
+      beta:         round(fit.slope, 3),
+      r_squared:    round(fit.r_squared, 4) ]
+}), 8))
+| sort correlation: "desc"

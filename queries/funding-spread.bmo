@@ -1,0 +1,39 @@
+# Annualized perpetual funding for BTC across three venues.
+#
+# The three sources disagree on column names (`funding_time` / `time`) and
+# their settlement stamps drift by milliseconds — 16:00:00.001Z against
+# 16:00:00Z. `relate` matches on exact equality and would silently drop those
+# rows; `align` with `within: 30m` is the correct tool for timestamps that are
+# meant to be the same instant but are not byte-identical.
+#
+# Funding settles every 8h on all three, hence * 3 * 365.
+
+annualize: (rate) => round(rate * 3 * 365 * 100, 3);
+
+[binance, bybit, okx]:
+    (@binance "futures.usds.funding_rates", symbol: "BTCUSDT", limit: 30)
+  & (@bybit   "market.funding_rates", category: "linear", symbol: "BTCUSDT", limit: 30)
+  & (@okx     "funding.history", instrument_id: "BTC-USDT-SWAP", limit: 30);
+
+B: binance | sort "funding_time" | select funding_time: "t", funding_rate: "r";
+Y: bybit   | sort "time"         | select time: "t",         funding_rate: "r";
+O: okx     | sort "funding_time" | select funding_time: "t", funding_rate: "r";
+
+B
+| align Y, "t", direction: "nearest", within: 30m
+| extend t: (x) => x.left.t, bn: (x) => x.left.r, by: (x) => x.right?.r
+| select "t", "bn", "by"
+
+| align O, "t", direction: "nearest", within: 30m
+| extend
+    t:       (x) => x.left.t,
+    binance: (x) => annualize(x.left.bn),
+    bybit:   (x) => x.left.by = null then null else annualize(x.left.by),
+    okx:     (x) => x.right = null then null else annualize(x.right.r)
+| select "t", "binance", "bybit", "okx"
+
+| extend
+    spread: (x) => (x.bybit = null or x.okx = null) then null
+                   else round(max([x.binance, x.bybit, x.okx])
+                            - min([x.binance, x.bybit, x.okx]), 3)
+| sort "t"

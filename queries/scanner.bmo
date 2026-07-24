@@ -1,0 +1,40 @@
+# Multi-symbol momentum scan, one parallel job per symbol.
+#
+# `parallel` is the dynamic counterpart to `&`: it takes a list of
+# zero-argument functions, so the symbol list can come from anywhere. The
+# second argument caps how many run at once — these are network-bound jobs,
+# which is exactly the case where the ceiling pays for itself.
+#
+# Each job returns a record; `table(...)` validates them into a fixed schema.
+
+symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
+          "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT"];
+
+study: (symbol) => {
+    candles:
+        (@binance "spot.klines", symbol: symbol, interval: "1h", limit: 120)
+        | sort "open_time";
+
+    returns:
+        (candles
+         | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+         | where "pc"
+         | extend r: (x) => round((x.close - x.pc) / x.pc * 100, 8)
+        )::list()::map(row => row.r);
+
+    latest: candles::last();
+    day_ago: (candles | take last: 25)::first();
+
+    [ symbol:       symbol,
+      close:        latest.close,
+      change_24h:   round((latest.close - day_ago.close) / day_ago.close * 100, 2),
+      hourly_sigma: round(stddev(returns, kind: "sample"), 3),
+      quote_vol_m:  round((candles | take last: 24)::sum("quote_volume") / 1000000, 1) ]
+};
+
+table(parallel(symbols::map(s => () => study(s)), 8))
+| extend
+    # return per unit of volatility — a crude ranking signal, not a Sharpe ratio
+    risk_adjusted: (r) => r.hourly_sigma = 0 then null
+                          else round(r.change_24h / r.hourly_sigma, 2)
+| sort change_24h: "desc"

@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# bmo — run a query against a bmo instance.
+#
+#   tools/bmo 'query text'        run a query given inline
+#   tools/bmo -f queries/x.bmo    run a query from a file
+#   tools/bmo -t '1h + 30m'       typed result (exact Decimal/Integer as strings)
+#   tools/bmo -s 'wait(5s)'       stream lifecycle events over SSE
+#   tools/bmo -r '@docs "map"'    raw markdown (for @docs and "describe" pages)
+#
+# Flags combine with -f, e.g. tools/bmo -t -f queries/indicators.bmo
+#
+# The instance address comes from BMO_URL. ngrok tunnels change on every
+# restart, so keep it in the environment rather than hardcoded here.
+
+set -euo pipefail
+
+: "${BMO_URL:?set BMO_URL to the instance base URL, e.g. https://<id>.ngrok-free.app}"
+
+mode=json
+file=
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    -t) mode=typed; shift ;;
+    -s) mode=sse;   shift ;;
+    -r) mode=raw;   shift ;;
+    -f) file=$2;    shift 2 ;;
+    --) shift; break ;;
+    *)  break ;;
+  esac
+done
+
+if [ -n "$file" ]; then
+  query=$(cat "$file")
+else
+  query=${1:?usage: tools/bmo [-t|-s|-r] [-f file | "query"]}
+fi
+
+# ngrok's free tier serves a browser interstitial unless this header is present.
+common=(-sS --max-time 1800 -H 'ngrok-skip-browser-warning: 1'
+        -X POST "$BMO_URL/api/run" --data-raw "$query")
+
+case $mode in
+  sse)
+    exec curl -N "${common[@]}" -H 'Accept: text/event-stream'
+    ;;
+  typed)
+    curl "${common[@]}" -H 'Accept: application/json; value-format=typed'
+    echo
+    ;;
+  raw)
+    # @docs and "describe" return one markdown string; print it verbatim.
+    curl "${common[@]}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+r = d.get("result")
+print(r if isinstance(r, str) else json.dumps(d, indent=2, ensure_ascii=False))
+sys.exit(1 if "error" in d else 0)'
+    ;;
+  *)
+    curl "${common[@]}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(json.dumps(d, indent=2, ensure_ascii=False))
+sys.exit(1 if "error" in d else 0)'
+    ;;
+esac

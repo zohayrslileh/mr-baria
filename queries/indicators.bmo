@@ -1,0 +1,43 @@
+# Classic indicator suite on one symbol: EMA12/26, MACD + signal + histogram,
+# Wilder RSI(14), ATR(14).
+#
+#   BMO_URL=... tools/bmo -f queries/indicators.bmo
+#
+# Every recurrence is rounded. Without that, Decimal scale grows about one
+# digit per row and blows past the 128-digit bound partway through the table.
+# Wilder smoothing is seeded from the first observation rather than an initial
+# SMA, so the first ~14 rows warm up; read the tail, not the head.
+
+@binance "spot.klines", symbol: "BTCUSDT", interval: "1h", limit: 300
+| sort "open_time"
+
+# previous close, via a one-row trailing frame
+| window 1, 0,
+    pc: (before, row, after) => list(before)?[0]?.close
+
+| extend
+    gain: (r) => r.pc = null then 0 else (r.close > r.pc then r.close - r.pc else 0),
+    loss: (r) => r.pc = null then 0 else (r.pc > r.close then r.pc - r.close else 0),
+    tr:   (r) => r.pc = null then r.high - r.low
+                 else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])
+
+| accumulate
+    ema12: (s, r) => round(s = null then r.close else 2/13 * r.close + 11/13 * s, 8),
+    ema26: (s, r) => round(s = null then r.close else 2/27 * r.close + 25/27 * s, 8),
+    avg_gain: (s, r) => round(s = null then r.gain else (s * 13 + r.gain) / 14, 8),
+    avg_loss: (s, r) => round(s = null then r.loss else (s * 13 + r.loss) / 14, 8),
+    atr:      (s, r) => round(s = null then r.tr   else (s * 13 + r.tr)   / 14, 8)
+
+| extend
+    macd: (r) => round(r.ema12 - r.ema26, 4),
+    rsi:  (r) => r.avg_loss = 0 then 100
+                 else round(100 - 100 / (1 + r.avg_gain / r.avg_loss), 2)
+
+# the signal line is an EMA of MACD, so it needs its own fold
+| accumulate
+    signal: (s, r) => round(s = null then r.macd else 0.2 * r.macd + 0.8 * s, 6)
+| extend
+    histogram: (r) => round(r.macd - r.signal, 4)
+
+| select "open_time", "close", "rsi", "macd", "signal", "histogram", "atr"
+| take last: 30
