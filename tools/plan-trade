@@ -3,9 +3,9 @@
 
     tools/plan-trade --symbol BTCUSDT --side Buy [--risk-pct 1] [--atr-stop 1.5] [--rr 2]
 
-You choose the direction. This does the arithmetic: pulls live equity from the
-account, ATR from the bmo instance, and the exchange's own quantity step and
-minimum order size, then sizes the position so that price reaching the stop
+You choose the direction. This does the arithmetic: live equity from the
+account, Wilder ATR from the exchange's own candles, and its quantity step and
+minimum order size — then sizes the position so that price reaching the stop
 costs exactly the intended fraction of equity.
 
 Direction is deliberately not automated. The screen's ranking was tested against
