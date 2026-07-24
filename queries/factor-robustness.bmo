@@ -1,0 +1,48 @@
+# Split-sample robustness check for the screen factors.
+#
+# Same factors as factor-validation.bmo, but the sample is cut in half by time
+# and each half is measured separately. If a factor only works in one half, it
+# is a regime artefact rather than an edge. Run this before trusting any
+# scoring change.
+
+cl: (v, lim) => (v > lim) then lim else ((v < 0 - lim) then 0 - lim else v);
+syms: ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT",
+       "AVAXUSDT","LINKUSDT","NEARUSDT","SUIUSDT","UNIUSDT","XLMUSDT"];
+
+per: (sym) => (
+    ((@bybit "market.klines", category: "linear", symbol: sym,
+             interval: "4h", limit: 1000) | sort "open_time")
+    | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+    | extend tr: (r) => (r.pc = null) then r.high - r.low
+                        else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])
+    | accumulate
+        ema50: (s, r) => round((s = null) then r.close else 2/51 * r.close + 49/51 * s, 8),
+        atr:   (s, r) => round((s = null) then r.tr    else (s * 13 + r.tr) / 14, 8)
+    | window 42, 12,
+        back6:  (b, r, a) => (count(b) = 42) then list(b)[36].close,
+        back42: (b, r, a) => (count(b) = 42) then list(b)[0].close,
+        f6:     (b, r, a) => (count(a) = 12) then round((list(a)[5].close  - r.close) / r.close * 100, 6),
+        f12:    (b, r, a) => (count(a) = 12) then round((list(a)[11].close - r.close) / r.close * 100, 6)
+    | where (r) => r.back6 != null and r.f12 != null and r.atr > 0
+    | extend ap: (r) => r.atr / r.close * 100
+    | extend score: (r) => 1.2 * cl((r.close - r.ema50) / r.ema50 * 100 / r.ap, 2)
+                         + 1.0 * cl((r.close - r.back6) / r.back6 * 100 / r.ap, 2)
+                         + 0.6 * cl((r.close - r.back42) / r.back42 * 100 / (r.ap * 2), 2)
+    | extend z6: (r) => round(r.f6 / r.ap, 6), z12: (r) => round(r.f12 / r.ap, 6)
+    | rank (r) => r.open_time, name: "seq", kind: "ordinal"
+    | extend half: (r) => (r.seq <= self::count() / 2) then "first half" else "second half"
+    | select "half", "score", "z6", "z12"
+);
+
+pooled: table(parallel(syms::map(s => () => per(s)), 6)
+              ::reduce([], (acc, t) => acc + list(t)));
+
+pooled
+| group "half"
+| extend n:  (g) => g.rows::count(),
+         c6:  (g) => round(g.rows::correlation("score", "z6"), 4),
+         c12: (g) => round(g.rows::correlation("score", "z12"), 4),
+         top_z6:    (g) => round((g.rows | where (x) => x.score > 2)::avg("z6"), 4),
+         bottom_z6: (g) => round((g.rows | where (x) => x.score < 0 - 2)::avg("z6"), 4)
+| select "key", "n", "c6", "c12", "top_z6", "bottom_z6"
+| sort "key"

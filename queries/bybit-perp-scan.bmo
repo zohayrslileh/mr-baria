@@ -1,0 +1,152 @@
+# Bybit USDT perpetual screen.
+#
+# Ranks candidates and sizes them. It predicts nothing, and nothing here
+# accounts for taker fees, funding paid while the position is held, or
+# slippage. Read docs/trading-notes.md before acting on a row.
+#
+# Two guards matter more than the scoring:
+#
+#   1. Instrument class. Bybit lists tokenized equities (symbol_type "stock" —
+#      SPCX, SNDK, SKHYNIX) and innovation-zone tokens alongside core crypto
+#      perps. Equities gap over weekends and track their underlying market, so
+#      crypto momentum factors read as noise on them. An unfiltered screen
+#      fills its top ranks with these. CLASS selects which pool to scan.
+#
+#   2. Funding outliers. Annualising an instantaneous funding rate can produce
+#      four-digit percentages. Extreme negative funding is a squeeze in
+#      progress, not free carry, so it is neutralised and flagged rather than
+#      rewarded.
+#
+# Tunables ────────────────────────────────────────────────────────────────
+ACCOUNT:       10000;    # account equity, quote currency
+RISK_PCT:      1;        # percent of equity risked per trade
+MIN_TURNOVER:  20000000; # 24h turnover floor
+MIN_AGE_DAYS:  90;       # skip contracts too young to have a real ATR
+TOP_N:         24;       # how many contracts to study
+ATR_STOP:      1.5;      # stop distance in ATR
+RR:            2;        # reward:risk, sets the target
+CLASS:         "core";   # "core" crypto · "innovation" · "stock" · "all"
+FUND_CAP:      100;      # |annualised funding| above this is a dislocation
+
+sg: (v) => (v > 0) then 1 else ((v < 0) then -1 else 0);
+cl: (v, lim) => (v > lim) then lim else ((v < 0 - lim) then 0 - lim else v);
+
+# ── universe: two bulk calls, joined; no per-symbol requests yet ──────────
+instruments:
+    @bybit "market.instruments", category: "linear", limit: 2000
+    | select "symbol", "symbol_type", "launch_time", "status";
+
+universe:
+    @bybit "market.tickers", category: "linear"
+    | where (r) => matches(r.symbol, "USDT$")
+                   and r.turnover_24h != null and r.turnover_24h > MIN_TURNOVER
+                   and r.last_price != null and r.last_price > 0
+    | relate instruments, "symbol", kind: "inner"
+    | extend
+        symbol:   (x) => x.left.symbol,
+        price:    (x) => x.left.last_price,
+        turnover: (x) => x.left.turnover_24h,
+        funding:  (x) => x.left.funding_rate,
+        status:   (x) => x.right.status,
+        # symbol_type is null for core crypto perps
+        class:    (x) => (x.right.symbol_type = null) then "core" else x.right.symbol_type,
+        age_days: (x) => (x.right.launch_time = null) then 0
+                         else round((now() - x.right.launch_time) / 1d, 0)
+    | select "symbol", "price", "turnover", "funding", "class", "age_days", "status"
+    | where (r) => (CLASS = "all" or r.class = CLASS) and r.age_days >= MIN_AGE_DAYS
+    | sort turnover: "desc"
+    | take TOP_N;
+
+# ── per contract: candles and open-interest history, fetched together ─────
+study: (u) => {
+    [c, oi]:
+        ((@bybit "market.klines", category: "linear", symbol: u.symbol,
+                 interval: "4h", limit: 120) | sort "open_time")
+      & ((@bybit "market.open_interest", category: "linear", symbol: u.symbol,
+                 interval: "1h", limit: 49) | sort "time");
+
+    e: c
+      | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+      | extend
+          gain: (r) => (r.pc = null) then 0 else ((r.close > r.pc) then r.close - r.pc else 0),
+          loss: (r) => (r.pc = null) then 0 else ((r.pc > r.close) then r.pc - r.close else 0),
+          tr:   (r) => (r.pc = null) then r.high - r.low
+                       else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])
+      # every recurrence is rounded — unrounded Decimal folds overflow
+      | accumulate
+          ema20: (s, r) => round((s = null) then r.close else 2/21 * r.close + 19/21 * s, 8),
+          ema50: (s, r) => round((s = null) then r.close else 2/51 * r.close + 49/51 * s, 8),
+          ag:    (s, r) => round((s = null) then r.gain else (s * 13 + r.gain) / 14, 8),
+          al:    (s, r) => round((s = null) then r.loss else (s * 13 + r.loss) / 14, 8),
+          atr:   (s, r) => round((s = null) then r.tr   else (s * 13 + r.tr) / 14, 8);
+
+    n:      e::last();
+    ago24:  (e | take last: 7)::first();     # 6 four-hour candles back
+    ago7d:  (e | take last: 43)::first();
+    oi_now: oi::last().open_interest;
+    oi_ago: oi::first().open_interest;
+
+    [ symbol:   u.symbol,
+      class:    u.class,
+      price:    u.price,
+      turnover: u.turnover,
+      bars:     c::count(),
+      atr_pct:  round(n.atr / n.close * 100, 3),
+      atr_abs:  n.atr,
+      ret_24h:  round((n.close - ago24.close) / ago24.close * 100, 2),
+      ret_7d:   round((n.close - ago7d.close) / ago7d.close * 100, 2),
+      rsi:      (n.al = 0) then 100 else round(100 - 100 / (1 + n.ag / n.al), 1),
+      vs_ema50: round((n.close - n.ema50) / n.ema50 * 100, 2),
+      ema_gap:  round((n.ema20 - n.ema50) / n.ema50 * 100, 2),
+      oi_24h:   (oi_ago = null or oi_ago = 0) then 0
+                else round((oi_now - oi_ago) / oi_ago * 100, 2),
+      fund_apr: (u.funding = null) then 0 else round(u.funding * 3 * 365 * 100, 2) ]
+};
+
+table(parallel(list(universe)::map(u => () => study(u)), 8))
+
+# ── scoring: each component named, clamped, and volatility-normalised, so a
+#    2% move in a quiet contract outranks a 2% move in a violent one ───────
+| extend
+    dislocated: (r) => abs(r.fund_apr) > FUND_CAP
+| extend
+    f_trend: (r) => (r.atr_pct = 0) then 0 else cl(r.vs_ema50 / r.atr_pct, 2),
+    f_mom:   (r) => (r.atr_pct = 0) then 0 else cl(r.ret_24h  / r.atr_pct, 2),
+    f_week:  (r) => (r.atr_pct = 0) then 0 else cl(r.ret_7d / (r.atr_pct * 2), 2),
+    # open interest rising with price means new money, not short covering
+    f_flow:  (r) => cl(sg(r.ret_24h) * r.oi_24h / 5, 2),
+    # mild negative funding pays longs; a dislocation is a squeeze, not carry
+    f_carry: (r) => r.dislocated then 0 else cl(0 - r.fund_apr / 20, 1)
+| extend
+    score: (r) => round(1.2 * r.f_trend + 1.0 * r.f_mom + 0.6 * r.f_week
+                        + 0.8 * r.f_flow + 0.6 * r.f_carry, 2)
+
+# ── what kind of setup this is, read off the price/OI quadrant ───────────
+| extend
+    regime: (r) => (r.ret_24h >= 0 and r.oi_24h >= 0) then "trend up · new longs"
+             else ((r.ret_24h >= 0 and r.oi_24h < 0) then "up · short covering"
+             else ((r.ret_24h < 0 and r.oi_24h >= 0) then "trend down · new shorts"
+             else "down · long liquidation"))
+
+# ── concrete trade parameters ────────────────────────────────────────────
+| extend
+    side:   (r) => (r.score >= 0) then "long" else "short",
+    stop:   (r) => (r.score >= 0) then round(r.price - ATR_STOP * r.atr_abs, 8)
+                                  else round(r.price + ATR_STOP * r.atr_abs, 8),
+    target: (r) => (r.score >= 0) then round(r.price + RR * ATR_STOP * r.atr_abs, 8)
+                                  else round(r.price - RR * ATR_STOP * r.atr_abs, 8)
+| extend
+    # size so that hitting the stop costs exactly RISK_PCT of the account
+    qty:      (r) => round(ACCOUNT * RISK_PCT / 100 / (ATR_STOP * r.atr_abs), 6),
+    notional: (r) => round(ACCOUNT * RISK_PCT / 100 / (ATR_STOP * r.atr_pct / 100), 0),
+    warn:     (r) => r.dislocated then "funding dislocation"
+                else (((r.score >= 0 and r.rsi > 70) or (r.score < 0 and r.rsi < 30))
+                      then "chasing a stretched move" else "")
+
+| select "symbol", "class", "side", "score", "price", "stop", "target",
+         "qty", "notional", "atr_pct", "rsi", "ret_24h", "ret_7d", "oi_24h",
+         "fund_apr", "regime", "warn",
+         "f_trend", "f_mom", "f_week", "f_flow", "f_carry"
+| extend rank_key: (r) => abs(r.score)
+| sort rank_key: "desc"
+| drop "rank_key"

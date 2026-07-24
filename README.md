@@ -43,6 +43,10 @@ queries/cross-venue-spread.bmo   one instrument across three venues
 queries/funding-spread.bmo       annualized perp funding, three venues
 queries/beta-vs-btc.bmo          correlation, beta and R² against BTC
 queries/strategy-engine.bmo      parameterized backtest, strategies as values
+queries/bybit-perp-scan.bmo      Bybit USDT perp screen, ATR-sized
+queries/factor-validation.bmo    do the screen factors predict anything?
+queries/factor-robustness.bmo    same factors, split by time
+docs/trading-notes.md            what the screen survived, and what it did not
 ```
 
 ## Running a query
@@ -62,6 +66,14 @@ tools/bmo -r '@docs "rolling", kind: "stage"'   # markdown contract
 
 Every query in `queries/` runs against a live instance and returns rows; they
 are meant to be read as worked examples as much as run.
+
+## Before trading off any of this
+
+`docs/trading-notes.md` is not optional reading. The short version: the
+screen's momentum ranking was tested against forward returns and does not
+hold up — its sign flips between the two halves of the sample, at an R² of
+0.002. Use the screen for sizing, volatility-aware stops and context; do not
+trade its ranking. bmo is read-only and cannot place an order.
 
 ## Notes before writing queries
 

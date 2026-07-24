@@ -1,0 +1,59 @@
+# Does the price-based part of the score predict the next 24h?
+# Score is computed from data up to bar t only; the outcome is the move from
+# t to t+6 (24h on a 4h series). Only the price factors can be reconstructed
+# per-bar — funding and OI snapshots are current-only — so this validates
+# f_trend + f_mom + f_week, not the full score.
+cl: (v, lim) => (v > lim) then lim else ((v < 0 - lim) then 0 - lim else v);
+
+syms: ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT",
+       "AVAXUSDT","LINKUSDT","NEARUSDT","SUIUSDT","UNIUSDT","XLMUSDT"];
+
+per: (sym) => (
+    ((@bybit "market.klines", category: "linear", symbol: sym,
+             interval: "4h", limit: 1000) | sort "open_time")
+    | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+    | extend tr: (r) => (r.pc = null) then r.high - r.low
+                        else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])
+    | accumulate
+        ema50: (s, r) => round((s = null) then r.close else 2/51 * r.close + 49/51 * s, 8),
+        atr:   (s, r) => round((s = null) then r.tr    else (s * 13 + r.tr) / 14, 8)
+    # past context and future outcome, both from explicit frames
+    | window 42, 6,
+        back6:  (b, r, a) => (count(b) = 42) then list(b)[36].close,
+        back42: (b, r, a) => (count(b) = 42) then list(b)[0].close,
+        fwd:    (b, r, a) => (count(a) = 6)  then round((list(a)[5].close - r.close) / r.close * 100, 6)
+    | where (r) => r.back6 != null and r.fwd != null and r.atr > 0
+    | extend
+        atr_pct: (r) => r.atr / r.close * 100
+    | extend
+        f_trend: (r) => cl((r.close - r.ema50) / r.ema50 * 100 / r.atr_pct, 2),
+        f_mom:   (r) => cl((r.close - r.back6) / r.back6 * 100 / r.atr_pct, 2),
+        f_week:  (r) => cl((r.close - r.back42) / r.back42 * 100 / (r.atr_pct * 2), 2)
+    | extend
+        score: (r) => 1.2 * r.f_trend + 1.0 * r.f_mom + 0.6 * r.f_week,
+        # normalise the outcome too, so violent contracts do not dominate
+        fwd_z: (r) => round(r.fwd / r.atr_pct, 6)
+    | extend sym: sym
+    | select "sym", "score", "fwd", "fwd_z"
+);
+
+pooled: table(parallel(syms::map(s => () => per(s)), 6)
+              ::reduce([], (acc, t) => acc + list(t)));
+
+[ observations: pooled::count(),
+  corr_raw:  round(pooled::correlation("score", "fwd"), 4),
+  corr_norm: round(pooled::correlation("score", "fwd_z"), 4),
+  fit:       pooled::linear_regression("score", "fwd_z"),
+  by_bucket:
+    (pooled
+     | extend b: (r) => (r.score > 2) then "5 strong +"
+                  else ((r.score > 0.7) then "4 mild +"
+                  else ((r.score > 0 - 0.7) then "3 neutral"
+                  else ((r.score > 0 - 2) then "2 mild -" else "1 strong -")))
+     | group "b"
+     | extend n: (g) => g.rows::count(),
+              mean_fwd_z: (g) => round(g.rows::avg("fwd_z"), 4),
+              hit_rate:   (g) => round((g.rows | where (x) => x.fwd > 0)::count()
+                                       / g.rows::count() * 100, 1)
+     | select "key", "n", "mean_fwd_z", "hit_rate"
+     | sort "key")::list() ]
