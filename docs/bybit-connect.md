@@ -8,9 +8,21 @@ the sub-account.
 
 ## What was established here
 
-Authorization completed successfully from this repository's environment and the
-credentials are valid. **Trading from that environment is not possible**, for a
-reason unrelated to the credentials — see the geo-block section.
+Authorization completed and the credentials are valid. Direct calls to
+`api.bybit.com` from this environment are refused by CloudFront on region, so
+requests are routed through a tunnel running on a machine that can reach it —
+see the geo-block section. Through that tunnel the full chain is verified:
+signed V5 calls return `retCode 0`, `wallet-balance` and `position/list` both
+answer, and `user/query-api` reports `readOnly: 0` with `ContractTrade:
+[Order, Position]`.
+
+Only `accountType=UNIFIED` is accepted; `CONTRACT`, `SPOT` and `FUND` all
+return `10001 accountType only support UNIFIED`. Margin mode is
+`REGULAR_MARGIN`.
+
+Funding the sub-account is not something the agent can do: the OAuth scope
+excludes main-account access, so the transfer has to be made from the Bybit
+interface.
 
 ## The two flows
 
@@ -134,6 +146,15 @@ proxy_ssl_name        api.bybit.com;
 Point the client at the tunnel with `BYBIT_API_BASE`. It sends
 `ngrok-skip-browser-warning` so the interstitial does not intercept API calls,
 and it names which of the two 403s it received.
+
+```bash
+export BYBIT_API_BASE="https://<tunnel>.ngrok-free.app"
+tools/bybit-api balance      # confirms the whole chain in one call
+```
+
+A tunnel serving `api.bybit.com` carries your signed requests, which means it
+sees the API key and every signature. Treat its URL as a secret and shut it
+down when you are finished.
 
 ## Using the client
 
