@@ -322,7 +322,88 @@ wherever the kind can leave it null.
 
 ---
 
-## 7. Result representations
+## 7. What the two halves buy you
+
+The pipeline half and the expression half share one grammar, and the leverage
+comes from where they meet. Four capabilities follow from that, none of which
+a relational query language can express.
+
+### The query decides what to fetch next
+
+`expand` runs a row callback that may call a **source**, so a later fetch can
+depend on what an earlier one returned:
+
+```
+@binance "spot.ticker_24h", symbols: [...]
+| sort quote_volume: "desc"
+| take 2
+| 2& expand (row) => (
+      (@binance "spot.klines", symbol: row.symbol, interval: "1h", limit: 3)
+      | extend src: row.symbol
+  )
+```
+
+[verified] SQL joins tables that already exist; it has no way to say "given
+these rows, now go and retrieve those." Here the universe is discovered and
+the fan-out follows from it, in one query.
+
+### State that reads its own previous output
+
+`accumulate` state may be any value, including a record — which makes it a
+path-dependent state machine over rows:
+
+```
+| accumulate st: (s, r) => {
+      p: s ?? [pos: 0, entry: 0, eq: 1, trades: 0];
+      (p.pos = 0) then (enter(r) then [pos: 1, entry: r.close, …] else p)
+                  else (exit(r)  then [pos: 0, eq: round(p.eq * (1 + ret), 12), …] else p)
+  }
+```
+
+[verified] A SQL window function cannot reference its own prior result, which
+is why EMA, trailing stops and position machines all fall outside it.
+
+### Behaviour as a value
+
+Functions are ordinary values, so a strategy can *be* data — a record holding
+its own prep pipeline and its own predicates — and one engine runs any of
+them without inspecting them:
+
+```
+strategies: [
+    breakout: [ name: "…",
+                prep:  (t) => (t | window 20, 0, ph: …),
+                enter: (r) => r.close > r.ph,
+                exit:  (r) => r.close < r.pl ] ];
+
+backtest: (candles, strat) => { … strat.prep(candles) … strat.enter(r) … };
+```
+
+[verified — `queries/strategy-engine.bmo`] Adding a strategy adds a value;
+the engine never changes. SQL has no lambdas, so the equivalent is generating
+query text as strings.
+
+### Tables nest and keep flowing
+
+`group` puts a whole table in a cell, and that cell pipes like any table:
+
+```
+| group "category"
+| extend top: (g) => (g.rows | sort "px" | take 1)::first().venue
+```
+
+Relational algebra is flat; nesting needs JSON or array escape hatches.
+
+### Where it is genuinely smaller than SQL
+
+No cost-based optimizer or index selection — stages declare their own
+complexity and you choose among them yourself. No persistence, schemas or
+transactions spanning requests. No ecosystem of tooling. The trade is
+deliberate: less machinery underneath, more expressive power on top.
+
+---
+
+## 8. Result representations
 
 `POST /api/run` takes **raw query text as the body**, not JSON. Use
 `curl --data-raw` — plain `--data` treats a leading `@` as a filename, which
@@ -355,7 +436,7 @@ Limits: 30 min and 1 GiB per query; 1 MiB request body; 32 KiB headers;
 
 ---
 
-## 8. Registered on this instance
+## 9. Registered on this instance
 
 13 sources — `binance` (109 ops), `okx` (96), `bybit` (60), `kraken` (27),
 `deribit` (26), plus `defillama`, `geckoterminal`, `mempool_space`, `range`,

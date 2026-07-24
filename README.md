@@ -42,6 +42,7 @@ queries/scanner.bmo              parallel multi-symbol momentum scan
 queries/cross-venue-spread.bmo   one instrument across three venues
 queries/funding-spread.bmo       annualized perp funding, three venues
 queries/beta-vs-btc.bmo          correlation, beta and R² against BTC
+queries/strategy-engine.bmo      parameterized backtest, strategies as values
 ```
 
 ## Running a query

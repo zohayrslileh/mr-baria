@@ -1,0 +1,74 @@
+# A parameterized backtest engine — strategies are first-class values.
+#
+# This is the fusion the language is built for: `|` carries the data flow,
+# `=>` carries the abstraction, and they compose with no boundary between
+# them. A strategy is a record holding its own prep pipeline and its own
+# predicates; the engine calls them without ever inspecting them, so adding a
+# strategy means adding a value, not editing the engine.
+#
+# Four things here have no SQL equivalent: functions as values, a fold whose
+# state is a record (each row decides from the previous row's output), a whole
+# table living in a variable and piped later, and a cross product of symbols
+# and strategies fanned out in parallel.
+
+# A strategy is a VALUE: a record holding its own prep pipeline and its own
+# entry/exit predicates. The engine never inspects them — it just calls them.
+strategies: [
+    breakout: [
+        name: "breakout 20/10",
+        prep: (t) => (
+            t | window 20, 0, ph: (b, r, a) => count(b) = 20 then max(b, "high")
+              | window 10, 0, pl: (b, r, a) => count(b) = 10 then min(b, "low")
+        ),
+        enter: (r) => r.ph != null and r.close > r.ph,
+        exit:  (r) => r.pl != null and r.close < r.pl
+    ],
+    ma_cross: [
+        name: "ma cross 10/30",
+        prep: (t) => (
+            t | rolling 10, "close", outputs: [fast: "avg"], minimum: 10
+              | rolling 30, "close", outputs: [slow: "avg"], minimum: 30
+        ),
+        enter: (r) => r.slow != null and r.fast > r.slow,
+        exit:  (r) => r.slow != null and r.fast < r.slow
+    ]
+];
+
+# One engine, any strategy. The state machine is path-dependent: each row's
+# output feeds the next row's decision.
+backtest: (candles, strat) => {
+    marked: strat.prep(candles)
+      | accumulate st: (s, r) => {
+            p: s ?? [pos: 0, entry: 0, eq: 1, trades: 0, wins: 0];
+            (p.pos = 0)
+              then (strat.enter(r)
+                    then [pos: 1, entry: r.close, eq: p.eq,
+                          trades: p.trades + 1, wins: p.wins]
+                    else p)
+              else (strat.exit(r)
+                    then {
+                        ret: (r.close - p.entry) / p.entry;
+                        [pos: 0, entry: 0,
+                         eq: round(p.eq * (1 + ret), 12),
+                         trades: p.trades,
+                         wins: p.wins + ((ret > 0) then 1 else 0)]
+                    }
+                    else p)
+        };
+    f: marked::last().st;
+    [ strategy: strat.name,
+      trades:   f.trades,
+      win_rate: (f.trades = 0) then null else round(f.wins / f.trades * 100, 1),
+      pnl_pct:  round((f.eq - 1) * 100, 2) ]
+};
+
+universe: ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+book: [strategies.breakout, strategies.ma_cross];
+
+table(parallel(universe::map(sym => () => {
+    c: (@binance "spot.klines", symbol: sym, interval: "1h", limit: 500)
+       | sort "open_time";
+    book::map(st => [...backtest(c, st), symbol: sym])
+}), 3)::reduce([], (acc, item) => acc + item))
+| select "symbol", "strategy", "trades", "win_rate", "pnl_pct"
+| sort pnl_pct: "desc"
