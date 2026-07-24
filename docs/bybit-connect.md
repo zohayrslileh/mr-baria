@@ -108,6 +108,33 @@ Run the trading side from a machine that can reach `api.bybit.com`. Market data
 is unaffected — the bmo instance reaches Bybit fine, which is why every query
 in `queries/` works regardless.
 
+### Two different 403s
+
+CloudFront returns 403 for two unrelated reasons and they are easy to confuse:
+
+| body says | meaning | fix |
+|---|---|---|
+| `configured to block access from your country` | genuine geo restriction | reach Bybit from elsewhere |
+| `Bad request. We can't connect to the server` | `Host` header not recognised | rewrite Host to `api.bybit.com` |
+
+The second is a proxy misconfiguration, not a block. A tunnel placed in front of
+`api.bybit.com` must rewrite the Host header rather than forward its own:
+
+```bash
+ngrok http --host-header=rewrite https://api.bybit.com
+```
+
+```nginx
+proxy_pass            https://api.bybit.com;
+proxy_set_header Host api.bybit.com;
+proxy_ssl_server_name on;
+proxy_ssl_name        api.bybit.com;
+```
+
+Point the client at the tunnel with `BYBIT_API_BASE`. It sends
+`ngrok-skip-browser-warning` so the interstitial does not intercept API calls,
+and it names which of the two 403s it received.
+
 ## Using the client
 
 ```bash

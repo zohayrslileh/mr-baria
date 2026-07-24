@@ -70,6 +70,9 @@ def request(method, path, params=None, key=None, secret=None):
         "X-BAPI-SIGN": signature,
         "X-BAPI-TIMESTAMP": timestamp,
         "X-BAPI-RECV-WINDOW": RECV_WINDOW,
+        # harmless against Bybit; suppresses the interstitial when BYBIT_API_BASE
+        # points at an ngrok tunnel forwarding to api.bybit.com
+        "ngrok-skip-browser-warning": "1",
     }
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -80,9 +83,19 @@ def request(method, path, params=None, key=None, secret=None):
             return json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:300]
+        # Two different 403s arrive from CloudFront and they mean opposite things.
         if exc.code == 403 and "CloudFront" in detail:
-            sys.exit("403 from CloudFront — this region is blocked from Bybit's "
-                     "trading API. The credentials are fine; the network path is not.")
+            if "your country" in detail:
+                sys.exit("403: CloudFront blocks this region from Bybit's trading "
+                         "API. The credentials are fine; the network path is not. "
+                         "Route through a host that can reach api.bybit.com.")
+            if "Bad request" in detail or "can't connect to the server" in detail:
+                sys.exit("403: CloudFront did not recognise the Host header. A "
+                         "proxy in front of api.bybit.com is forwarding its own "
+                         "hostname instead of rewriting it. For ngrok use "
+                         "--host-header=rewrite; for nginx set "
+                         "proxy_set_header Host api.bybit.com. Not a geo block.")
+            sys.exit("403 from CloudFront: %s" % detail)
         sys.exit("HTTP %s: %s" % (exc.code, detail))
 
 
