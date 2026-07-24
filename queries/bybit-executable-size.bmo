@@ -1,0 +1,86 @@
+# Which contracts can a small account actually trade at its intended risk?
+#
+# On a $500 account risking 1%, the budget is $5 per trade. An ATR-wide stop
+# then implies a small quantity — and Bybit's minimum_order_quantity and
+# quantity_step can force a position larger than that budget allows. When they
+# do, the trade silently risks more than intended, which is how small accounts
+# get hurt by arithmetic rather than by the market.
+#
+# This rounds the ideal quantity DOWN to the exchange's step, then reports what
+# the risk actually becomes if the minimum forces it back up.
+
+ACCOUNT:      500;
+RISK_PCT:     1;
+ATR_STOP:     1.5;
+MIN_TURNOVER: 20000000;
+MIN_AGE_DAYS: 90;
+TOP_N:        20;
+
+budget: ACCOUNT * RISK_PCT / 100;
+
+instruments:
+    @bybit "market.instruments", category: "linear", limit: 2000
+    | select "symbol", "symbol_type", "launch_time",
+             "minimum_order_quantity", "quantity_step", "minimum_notional_value";
+
+universe:
+    @bybit "market.tickers", category: "linear"
+    | where (r) => matches(r.symbol, "USDT$")
+                   and r.turnover_24h != null and r.turnover_24h > MIN_TURNOVER
+                   and r.last_price != null and r.last_price > 0
+    | relate instruments, "symbol", kind: "inner"
+    | extend
+        symbol:   (x) => x.left.symbol,
+        price:    (x) => x.left.last_price,
+        turnover: (x) => x.left.turnover_24h,
+        class:    (x) => (x.right.symbol_type = null) then "core" else x.right.symbol_type,
+        age_days: (x) => (x.right.launch_time = null) then 0
+                         else round((now() - x.right.launch_time) / 1d, 0),
+        min_qty:  (x) => x.right.minimum_order_quantity,
+        step:     (x) => x.right.quantity_step,
+        min_not:  (x) => x.right.minimum_notional_value
+    | select "symbol", "price", "turnover", "class", "age_days",
+             "min_qty", "step", "min_not"
+    | where (r) => r.class = "core" and r.age_days >= MIN_AGE_DAYS
+                   and r.min_qty != null and r.step != null and r.step > 0
+    | sort turnover: "desc"
+    | take TOP_N;
+
+atr_of: (u) => {
+    c: (@bybit "market.klines", category: "linear", symbol: u.symbol,
+               interval: "4h", limit: 120) | sort "open_time";
+    e: c
+      | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+      | extend tr: (r) => (r.pc = null) then r.high - r.low
+                          else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])
+      | accumulate atr: (s, r) => round((s = null) then r.tr else (s * 13 + r.tr) / 14, 8);
+    n: e::last();
+    [...u, atr_abs: n.atr, atr_pct: round(n.atr / n.close * 100, 3)]
+};
+
+table(parallel(list(universe)::map(u => () => atr_of(u)), 8))
+
+| extend
+    stop_dist: (r) => ATR_STOP * r.atr_abs
+| extend
+    ideal_qty: (r) => budget / r.stop_dist
+| extend
+    # round DOWN to the exchange step so the intended risk is never exceeded
+    step_qty: (r) => floor(r.ideal_qty / r.step) * r.step
+| extend
+    # if that falls under the exchange minimum, the minimum is what you must send
+    exec_qty: (r) => (r.step_qty < r.min_qty) then r.min_qty else r.step_qty
+| extend
+    notional:    (r) => round(r.exec_qty * r.price, 2),
+    actual_risk: (r) => round(r.exec_qty * r.stop_dist, 2)
+| extend
+    risk_pct_real: (r) => round(r.actual_risk / ACCOUNT * 100, 2),
+    leverage:      (r) => round(r.exec_qty * r.price / ACCOUNT, 2)
+| extend
+    verdict: (r) => (r.notional < r.min_not) then "below min notional"
+              else ((r.actual_risk > budget * 1.15) then "min size forces over-risk"
+              else ((r.leverage > 5) then "needs heavy leverage" else "ok"))
+
+| select "symbol", "price", "atr_pct", "exec_qty", "notional", "leverage",
+         "actual_risk", "risk_pct_real", "min_qty", "verdict"
+| sort "risk_pct_real"

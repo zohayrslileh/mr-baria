@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# forward-test — score the logged screen against what actually happened.
+#
+#   BMO_URL=... tools/forward-test [hours]     (default 24)
+#
+# Reads journal/snapshots.jsonl, keeps rows old enough for the horizon to have
+# completed, then asks the exchange what each contract did over that window.
+# This is the honest counterpart to a backtest: the scores were written down
+# before the outcome existed, so nothing here can be fitted after the fact.
+#
+# Expect "not enough completed rows" until the journal has some age.
+
+set -euo pipefail
+
+: "${BMO_URL:?set BMO_URL to the instance base URL}"
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+export SNAP="$root/journal/snapshots.jsonl"
+export HOURS="${1:-24}"
+export MAXROWS=400
+
+[ -f "$SNAP" ] || { echo "no journal yet — run tools/snapshot first"; exit 1; }
+
+query=$(python3 -c '
+import json, os, sys
+from datetime import datetime, timedelta, timezone
+
+hours = int(os.environ["HOURS"])
+now = datetime.now(timezone.utc)
+cutoff = now - timedelta(hours=hours)
+
+rows = []
+with open(os.environ["SNAP"]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        r = json.loads(line)
+        at = datetime.strptime(r["at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        if at <= cutoff and r.get("score") is not None:
+            rows.append((r["at"], r["symbol"], r["score"], r["price"], r["atr_pct"]))
+
+# newest first, capped, so the generated query stays well inside the 1 MiB body limit
+rows = rows[-int(os.environ["MAXROWS"]):]
+if not rows:
+    sys.stderr.write("not enough completed rows yet — journal needs to be at least %dh old\n" % hours)
+    sys.exit(2)
+
+lits = ",\n  ".join(
+    "[at: timestamp(\"%s\"), symbol: \"%s\", score: %s, px0: %s, ap: %s]"
+    % (a, s, sc, p, ap) for a, s, sc, p, ap in rows)
+
+print("""
+HOURS: %d;
+logged: table([
+  %s
+]);
+
+logged
+| 6& expand (row) => (
+      (@bybit "market.klines", category: "linear", symbol: row.symbol,
+              interval: "1h", from: row.at, to: row.at + HOURS * 1h, limit: 200)
+      | sort "open_time"
+      | take last: 1
+      # the kline already carries `symbol`; re-adding it collides
+      | extend at: row.at, score: row.score, px0: row.px0, ap: row.ap
+      | select "at", "symbol", "score", "px0", "ap", close: "px1"
+  )
+| extend
+    move: (r) => round((r.px1 - r.px0) / r.px0 * 100, 4)
+| extend
+    move_z: (r) => (r.ap = 0) then 0 else round(r.move / r.ap, 4)
+| extend
+    bucket: (r) => (r.score > 2) then "5 strong +"
+             else ((r.score > 0.7) then "4 mild +"
+             else ((r.score > 0 - 0.7) then "3 neutral"
+             else ((r.score > 0 - 2) then "2 mild -" else "1 strong -")))
+| group "bucket"
+| extend n: (g) => g.rows::count(),
+         mean_z: (g) => round(g.rows::avg("move_z"), 4),
+         up_pct: (g) => round((g.rows | where (x) => x.move > 0)::count()
+                              / g.rows::count() * 100, 1)
+| rename key: "bucket"
+| select "bucket", "n", "mean_z", "up_pct"
+| sort "bucket"
+""" % (hours, lits))
+') || exit $?
+
+echo "$query" | "$root/tools/bmo" -f /dev/stdin

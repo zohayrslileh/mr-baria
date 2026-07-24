@@ -1,0 +1,8 @@
+# Credentials never belong in this repository.
+.env
+.env.*
+*.key
+*.pem
+secrets/
+**/credentials*.json
+**/*token*.json

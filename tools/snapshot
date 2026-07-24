@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# snapshot — append one dated screen result to journal/snapshots.jsonl
+#
+#   BMO_URL=... tools/snapshot
+#
+# Run it on a schedule. Each line is one contract at one instant, with the
+# score and every factor that produced it. Weeks later, queries/forward-test.bmo
+# fetches what the price actually did afterwards and scores the screen against
+# it — an out-of-sample record a backtest cannot flatter, because the rows were
+# written before the outcome existed.
+#
+# Costs nothing and risks nothing. Start it before risking money, not after.
+
+set -euo pipefail
+
+: "${BMO_URL:?set BMO_URL to the instance base URL}"
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+
+export STAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+export OUT="$root/journal/snapshots.jsonl"
+mkdir -p "$root/journal"
+
+"$root/tools/bmo" -f "$root/queries/bybit-perp-scan.bmo" | python3 -c '
+import json, os, sys
+
+d = json.load(sys.stdin)
+if "error" in d:
+    sys.stderr.write("query failed: " + json.dumps(d["error"]) + "\n")
+    sys.exit(1)
+
+keep = ("symbol", "class", "side", "score", "price", "stop", "target",
+        "atr_pct", "rsi", "ret_24h", "ret_7d", "oi_24h", "fund_apr",
+        "regime", "warn", "f_trend", "f_mom", "f_week", "f_flow", "f_carry")
+
+rows = d["result"]["rows"]
+with open(os.environ["OUT"], "a") as f:
+    for r in rows:
+        f.write(json.dumps({"at": os.environ["STAMP"],
+                            **{k: r.get(k) for k in keep}},
+                           ensure_ascii=False) + "\n")
+print("%s  appended %d rows" % (os.environ["STAMP"], len(rows)))
+'
