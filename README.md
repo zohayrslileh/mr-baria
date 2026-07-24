@@ -51,7 +51,38 @@ docs/bybit-connect.md            OAuth AI sub-account setup, and the geo-block
 tools/bybit-api                  signed Bybit V5 client, dry-run by default
 tools/snapshot                   append the screen to the out-of-sample journal
 tools/forward-test               score that journal against what happened
+tools/bmo-serve                  run the engine locally instead of over a tunnel
 ```
+
+## Running the engine locally
+
+bmo ships as a single 19 MB static-ish ELF binary (only libc, libm, libgcc).
+Running it here removes the dependency on a tunnel staying up:
+
+```bash
+cp /path/to/bmo tools/bin/bmo && chmod +x tools/bin/bmo
+sha256sum tools/bin/bmo
+# c7d7e16e698c80fc5ff9475e77faf29ea8a5eec8e26a039ed36a9f3f7fa0c059   v0.1.6
+
+tools/bmo-serve start
+export BMO_URL="http://127.0.0.1:8080"
+```
+
+The binary is not tracked — `tools/bin/.gitignore` keeps it out.
+
+**One source is unreachable from a CloudFront-blocked region.** `bybit` returns
+HTTP 403; `binance`, `okx`, `kraken`, `deribit`, `defillama`, `geckoterminal`
+and `mempool_space` all answer. So:
+
+| runs locally | needs a Bybit-capable instance |
+|---|---|
+| `indicators` `bollinger` `scanner` | `bybit-perp-scan` |
+| `beta-vs-btc` `strategy-engine` | `bybit-executable-size` |
+| | `funding-spread` `cross-venue-spread` |
+
+bmo honours `HTTPS_PROXY`, so Bybit can be routed through a proxy that reaches
+it. For price-level analysis the gap matters less than it looks —
+`cross-venue-spread.bmo` measures Binance against Bybit at under 1.2 bps.
 
 ## Running a query
 

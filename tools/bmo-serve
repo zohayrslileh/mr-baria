@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# bmo-serve — run the bmo engine locally instead of over a tunnel.
+#
+#   tools/bmo-serve start [port]   start it in the background (default 8080)
+#   tools/bmo-serve stop
+#   tools/bmo-serve status
+#
+# Point the rest of the tooling at it with:
+#   export BMO_URL="http://127.0.0.1:8080"
+#
+# The binary is not in this repository — 19 MB does not belong in git. Put it at
+# $BMO_BIN, or at tools/bin/bmo, and verify it before running:
+#
+#   sha256sum bmo
+#   c7d7e16e698c80fc5ff9475e77faf29ea8a5eec8e26a039ed36a9f3f7fa0c059   # v0.1.6
+#
+# Reachability note: of the 13 registered sources, only `bybit` fails from a
+# region CloudFront blocks — it returns HTTP 403 while binance, okx, kraken,
+# deribit, defillama, geckoterminal and mempool_space all answer. Queries that
+# touch Bybit still need an instance that can reach it. bmo honours HTTPS_PROXY,
+# so routing is possible if a suitable proxy exists.
+
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+bin="${BMO_BIN:-$root/tools/bin/bmo}"
+pidfile="${TMPDIR:-/tmp}/bmo-serve.pid"
+logfile="${TMPDIR:-/tmp}/bmo-serve.log"
+port="${2:-8080}"
+
+case "${1:-status}" in
+  start)
+    [ -x "$bin" ] || { echo "no bmo binary at $bin — set BMO_BIN"; exit 1; }
+    if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+      echo "already running (pid $(cat "$pidfile"))"; exit 0
+    fi
+    nohup "$bin" serve --port "$port" > "$logfile" 2>&1 &
+    echo $! > "$pidfile"
+    sleep 2
+    if curl -sS -m 5 "http://127.0.0.1:$port/api/about" > /dev/null 2>&1; then
+      echo "listening on http://127.0.0.1:$port  (pid $(cat "$pidfile"))"
+      echo "export BMO_URL=\"http://127.0.0.1:$port\""
+    else
+      echo "failed to start; log follows:"; cat "$logfile"; exit 1
+    fi
+    ;;
+  stop)
+    if [ -f "$pidfile" ]; then
+      kill "$(cat "$pidfile")" 2>/dev/null || true
+      rm -f "$pidfile"
+      echo "stopped"
+    else
+      echo "not running"
+    fi
+    ;;
+  status)
+    if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+      echo "running (pid $(cat "$pidfile"))"
+      curl -sS -m 5 "http://127.0.0.1:$port/api/status" 2>/dev/null || true
+      echo
+    else
+      echo "not running"
+    fi
+    ;;
+  *)
+    echo "usage: tools/bmo-serve {start [port]|stop|status}"; exit 2
+    ;;
+esac
