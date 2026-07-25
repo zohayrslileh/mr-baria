@@ -176,14 +176,49 @@ data that showed the failure. A result found that way needs an independent
 sample before it means anything — and when it got one, it did not survive.
 Replicate before believing, not after.
 
+## Factor scoreboard
+
+Everything tested so far, on 4h bars against the next 24h, outcomes divided by
+ATR%, sample split in half by time. A factor passes only if it keeps its sign
+in **both** halves and survives on a **second venue**.
+
+| factor | half A | half B | replication | verdict |
+|---|---|---|---|---|
+| trend, absolute | −0.203 | +0.014 | — | flips |
+| momentum, absolute | −0.122 | +0.069 | — | flips |
+| weekly, absolute | −0.103 | +0.029 | — | flips |
+| momentum, cross-sectional | +0.030 | +0.155 | OKX: −0.036 / +0.154 | flips on replication |
+| funding rate | −0.089 | +0.027 | — | flips |
+| open-interest change | −0.068 | −0.014 | OKX: −0.044 / +0.008 | flips on replication |
+
+**Nothing has passed.** Two of them looked like they had until a second venue
+was tried, which is the whole reason the replication column exists.
+
+Two honest qualifications. The OKX open-interest test carries only 492
+observations, because that venue's open-interest history overlaps its candle
+range poorly — it is underpowered, and a fair reading is "not confirmed"
+rather than "refuted". And every one of these lives on the same twelve liquid
+majors at one horizon; a different universe or timeframe is untested ground,
+not proven barren.
+
+The shape repeats across all six: half B leans positive, half A does not. That
+is a description of which regime happened to fall in which half of the window,
+which is what a factor with no edge looks like when it is measured this way.
+
 ## What would be worth testing next
 
 - Funding and open-interest factors on their **history** rather than the
   current snapshot — both are available per-bar and neither was validated
   above.
-- Anything that is not a price factor. Both the absolute and the relative
-  price measures have now failed the same way, on two venues. Funding and
-  open-interest history are available per-bar and neither has been tested.
+- A longer window. Everything above spans months, and the halves are regimes
+  rather than independent draws. Bybit funding reaches back to August 2025 and
+  OKX candles paginate further; that is the cheapest way to get a sample where
+  the split means something.
+- A different horizon. 24h was chosen once and never revisited. Carry-shaped
+  ideas plausibly need days, not hours.
+- The funding basis between venues, which does not require predicting price at
+  all — `queries/funding-spread.bmo` shows 4–8% annualised dispersion on the
+  same contract.
 - Longer horizons. Everything above is 24h and 48h; a 4h series supports a
   week or more.
 - A funding-carry basis trade, which does not depend on predicting price at

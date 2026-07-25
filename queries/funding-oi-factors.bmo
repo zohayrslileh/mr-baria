@@ -1,0 +1,70 @@
+# Do funding and open interest predict anything price factors do not?
+#
+# Both were untested when every price factor had already failed. They are the
+# obvious next candidates: funding is what traders pay to hold a side, and open
+# interest says whether a move is bringing new money in or closing positions.
+#
+# Open interest arrives on the same 4h grid; funding settles every 8h, so it is
+# carried backward onto each bar with `align … within: 8h`. Needs an instance
+# that can reach Bybit.
+#
+#   tools/bmo --session-new
+#   tools/bmo -S -f queries/funding-oi-factors.bmo
+#   tools/bmo -S '<hypothesis against `panel`>'
+#
+# Result: funding flips sign between halves (-0.089 then +0.027). Open-interest
+# change keeps its sign (-0.068 then -0.014) but the second half is close
+# enough to zero to be nothing, and an OKX replication flips it. Neither is
+# tradeable. See docs/trading-notes.md.
+
+cl: (v, lim) => (v > lim) then lim else ((v < 0 - lim) then 0 - lim else v);
+syms: ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT"];
+
+
+per: (sym) => {
+    [k, oi, fr]:
+        ((@bybit "market.klines", category: "linear", symbol: sym, interval: "4h", limit: 1000) | sort "open_time")
+      & ((@bybit "market.open_interest", category: "linear", symbol: sym, interval: "4h", limit: 1000) | sort "time")
+      & ((@bybit "market.funding_rates", category: "linear", symbol: sym, limit: 1000) | sort "time");
+
+    base: k
+      | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+      | extend tr: (r) => (r.pc = null) then r.high - r.low
+                          else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])
+      | accumulate atr: (s, r) => round((s = null) then r.tr else (s * 13 + r.tr) / 14, 8)
+      | window 0, 12, f6: (b, r, a) => (count(a) = 12) then round((list(a)[5].close - r.close) / r.close * 100, 6)
+      | where (r) => r.f6 != null and r.atr > 0
+      | select "open_time", "close", "atr", "f6";
+
+    # open interest lands on the same 4h grid; funding settles every 8h, so it
+    # is carried backward onto each bar within its interval
+    wo: base
+      | align (oi | select time: "t", open_interest: "oi"), "open_time", "t", kind: "inner"
+      | extend open_time: (x) => x.left.open_time, close: (x) => x.left.close,
+               atr: (x) => x.left.atr, f6: (x) => x.left.f6, oi: (x) => x.right.oi
+      | select "open_time", "close", "atr", "f6", "oi";
+
+    wf: wo
+      | align (fr | select time: "t", funding_rate: "fr"), "open_time", "t",
+              direction: "backward", within: 8h, kind: "inner"
+      | extend open_time: (x) => x.left.open_time, close: (x) => x.left.close,
+               atr: (x) => x.left.atr, f6: (x) => x.left.f6, oi: (x) => x.left.oi,
+               fr: (x) => x.right.fr
+      | select "open_time", "close", "atr", "f6", "oi", "fr";
+
+    wf
+      | window 6, 0, oi0: (b, r, a) => (count(b) = 6) then list(b)[0].oi
+      | where (r) => r.oi0 != null and r.oi0 > 0
+      | extend ap: (r) => r.atr / r.close * 100
+      | extend
+          fund:  (r) => round(cl(r.fr * 3 * 365 * 100, 100), 6),
+          doi:   (r) => round(cl((r.oi - r.oi0) / r.oi0 * 100, 30), 6),
+          z6:    (r) => round(r.f6 / r.ap, 6)
+      | rank (r) => r.open_time, name: "seq", kind: "ordinal"
+      | extend half: (r) => (r.seq <= self::count() / 2) then "A" else "B"
+      | select "open_time", "half", "fund", "doi", "z6"
+};
+
+panel: table(parallel(syms::map(s => () => per(s)), 6)
+             ::reduce([], (acc, t) => acc + list(t)));
+[ n: panel::count(), from: (panel | sort "open_time")::first().open_time ]
