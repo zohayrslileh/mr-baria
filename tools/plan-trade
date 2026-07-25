@@ -246,8 +246,10 @@ def main():
     if notional > equity * 5:
         print("\n  ! leverage above 5x")
     if market_max and qty > market_max:
-        print("\n  ! quantity %s exceeds the market-order ceiling %s — split it "
-              "or use a limit order" % (qty, market_max))
+        print("\n  ! quantity %s exceeds the market-order ceiling %s. Entering with a "
+              "\n    limit order gets round it, but STOP_MARKET is a market order when "
+              "\n    it triggers and hits the same ceiling — so the protective orders "
+              "\n    must use closePosition rather than a quantity." % (qty, market_max))
     if min_price and (q(stop, tick) < min_price or q(target, tick) < min_price):
         print("\n  ! stop or target below the exchange minimum price %s" % min_price)
 
@@ -261,19 +263,29 @@ def main():
         opposite = "SELL" if side == "BUY" else "BUY"
         # Binance keeps the entry and its protective orders separate, so the
         # stop and target are their own reduce-only algo orders
-        print("  binance-cli futures-usds new-order --symbol %s \\\n"
-              "      --side %s --type MARKET --quantity %s"
-              % (args.symbol, side, qty))
+        if market_max and qty > market_max:
+            print("  binance-cli futures-usds new-order --symbol %s --type LIMIT \\\n"
+                  "      --side %s --time-in-force GTC --quantity %s --price %s"
+                  % (args.symbol, side, qty, q(price, tick)))
+        else:
+            print("  binance-cli futures-usds new-order --symbol %s \\\n"
+                  "      --side %s --type MARKET --quantity %s"
+                  % (args.symbol, side, qty))
         print()
-        print("  binance-cli futures-usds new-algo-order --symbol %s \\\n"
-              "      --side %s --type STOP_MARKET --stop-price %s \\\n"
-              "      --quantity %s --reduce-only true"
-              % (args.symbol, opposite, q(stop, tick), qty))
+        # Conditional orders live on /fapi/v1/algoOrder, take triggerPrice
+        # rather than stopPrice, and require algoType. Over the market-order
+        # ceiling they must close the position instead of naming a quantity.
+        close_arg = ("--close-position true" if market_max and qty > market_max
+                     else "--quantity %s --reduce-only true" % qty)
+        print("  binance-cli futures-usds new-algo-order --algo-type CONDITIONAL \\\n"
+              "      --symbol %s --side %s --type STOP_MARKET \\\n"
+              "      --trigger-price %s %s"
+              % (args.symbol, opposite, q(stop, tick), close_arg))
         print()
-        print("  binance-cli futures-usds new-algo-order --symbol %s \\\n"
-              "      --side %s --type TAKE_PROFIT_MARKET --stop-price %s \\\n"
-              "      --quantity %s --reduce-only true"
-              % (args.symbol, opposite, q(target, tick), qty))
+        print("  binance-cli futures-usds new-algo-order --algo-type CONDITIONAL \\\n"
+              "      --symbol %s --side %s --type TAKE_PROFIT_MARKET \\\n"
+              "      --trigger-price %s %s"
+              % (args.symbol, opposite, q(target, tick), close_arg))
 
 
 if __name__ == "__main__":
