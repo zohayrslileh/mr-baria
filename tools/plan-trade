@@ -175,10 +175,16 @@ def main():
     p.add_argument("--interval", default="4h")
     p.add_argument("--venue", default="binance-testnet",
                    choices=["binance-testnet", "bybit"])
+    p.add_argument("--equity", help="size against this instead of the real balance — "
+                                    "a testnet account funded with 5000 does not "
+                                    "represent a 500 account")
     args = p.parse_args()
 
     reader = read_binance if args.venue == "binance-testnet" else read_bybit
     equity, step, min_qty, min_notional, tick, candles = reader(args.symbol, args.interval)
+    actual_equity = equity
+    if args.equity:
+        equity = Decimal(args.equity)
     budget = equity * Decimal(str(args.risk_pct)) / 100
     price = candles[-1][3]
     atr = wilder_atr(candles)
@@ -200,11 +206,15 @@ def main():
     notional = qty * price
 
     def q(value, unit):
-        return value.quantize(unit, rounding=ROUND_DOWN)
+        """Snap to a multiple of the tick, not to its decimal places.
+        quantize(Decimal("0.10")) yields two decimals — 63742.27 — which is not
+        a multiple of a 0.10 tick and the exchange rejects it."""
+        return (value / unit).to_integral_value(ROUND_DOWN) * unit
 
     print("%s  %s  on %s" % (args.symbol, args.side.upper(), args.venue))
-    print("  equity           %s   risking %s%% = %s" % (
-        equity, args.risk_pct, q(budget, Decimal("0.01"))))
+    print("  equity           %s   risking %s%% = %s%s" % (
+        equity, args.risk_pct, q(budget, Decimal("0.01")),
+        "   (account holds %s)" % actual_equity if args.equity else ""))
     print("  price            %s   ATR(%s) %s (%s%%)" % (
         price, args.interval, atr.quantize(tick), atr_pct))
     print("  stop             %s   (%s ATR = %s away)" % (

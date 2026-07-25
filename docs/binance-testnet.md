@@ -37,6 +37,15 @@ binance-cli futures-usds cancel-all-open-orders --symbol BTCUSDT
 binance-cli futures-usds change-initial-leverage --symbol BTCUSDT --leverage 2
 ```
 
+The CLI reads stdin unconditionally and throws `EAGAIN: resource temporarily
+unavailable` when stdin is neither a tty nor a pipe. It still prints its result
+afterwards, but the error corrupts the output for anything parsing it.
+Redirect stdin to fix it:
+
+```bash
+binance-cli futures-usds futures-account-balance-v3 < /dev/null
+```
+
 Public endpoints work without keys, which makes it easy to check the wiring
 before authenticating:
 
@@ -65,6 +74,15 @@ placing its stop leaves the position unprotected.
 Note `MIN_NOTIONAL` is 50 USDT on BTCUSDT here, ten times Bybit's floor. At 1%
 risk on a $500 account an ATR-wide stop still lands well above it, but a
 tighter stop or a smaller account would not.
+
+`tickSize` needs care. It is `0.10` on BTCUSDT, and prices must be *multiples*
+of it — `Decimal.quantize(Decimal("0.10"))` gives two decimal places instead,
+so 63742.27 passes local rounding and is rejected by the exchange. Snap with
+`(value / tick).to_integral_value(ROUND_DOWN) * tick`.
+
+A testnet account is funded with 5000 USDT, which does not represent the $500
+being planned for. `--equity 500` sizes against the intended account while
+still reading everything else live.
 
 ## Which tool reads what
 
