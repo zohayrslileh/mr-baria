@@ -1,0 +1,67 @@
+# Current state of the liquid majors, one row each.
+#
+# Reads OKX perpetuals — the real market — rather than testnet candles, whose
+# venue is synthetic even though its prices track reality.
+#
+# The column that carries the most is `vs_ema50` read against `atr_pct`: a
+# distance from the mean measured in the contract's own volatility. +4.8% on a
+# 1.7% ATR is 2.8 ATRs and means something; the same +4.8% on a 7% ATR is
+# noise. Raw percentages just rank by volatility.
+#
+#   BMO_URL=http://127.0.0.1:8080 tools/bmo -f queries/market-state.bmo
+#
+# UNDER REVIEW — do not build on this yet. This is the query as it was actually
+# run to pick a trade, kept for the record, but it has at least these defects:
+#
+#   * the last bar is still forming. Including it inflated AVAX's stretch from
+#     2.08 to 2.61 ATRs and its RSI from 66.0 to 68.9, because a partial bar
+#     has a short range and a move that has not finished. OKX flags this with
+#     `complete`, so `| where complete: true` is the fix.
+#   * `market.candle_history` is the operation for older candles;
+#     `market.candles` is the one for recent ones. They coincided at limit 300
+#     here, which does not make the choice correct.
+#   * the universe is hand-written rather than discovered from the exchange.
+#   * it reads OKX instruments while orders go to Binance — the analysed set
+#     and the traded set are different venues.
+#
+# A further problem was raised in review and is not yet identified.
+
+syms: ["BTC-USDT-SWAP","ETH-USDT-SWAP","SOL-USDT-SWAP","XRP-USDT-SWAP",
+       "DOGE-USDT-SWAP","ADA-USDT-SWAP","AVAX-USDT-SWAP","LINK-USDT-SWAP"];
+
+study: (s) => {
+    c: (@okx "market.candle_history", instrument_id: s, interval: "4H", limit: 300)
+       | sort "open_time";
+
+    e: c
+      | where "close"
+      | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+      | extend
+          tr:   (r) => (r.pc = null) then r.high - r.low
+                       else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)]),
+          gain: (r) => (r.pc = null) then 0 else ((r.close > r.pc) then r.close - r.pc else 0),
+          loss: (r) => (r.pc = null) then 0 else ((r.pc > r.close) then r.pc - r.close else 0)
+      # four states folded in one pass; each rounded, or Decimal scale runs away
+      | accumulate
+          atr:   (st, r) => round((st = null) then r.tr    else (st * 13 + r.tr) / 14, 8),
+          ema50: (st, r) => round((st = null) then r.close else 2/51 * r.close + 49/51 * st, 8),
+          ag:    (st, r) => round((st = null) then r.gain  else (st * 13 + r.gain) / 14, 8),
+          al:    (st, r) => round((st = null) then r.loss  else (st * 13 + r.loss) / 14, 8);
+
+    n:  e::last();
+    d1: (e | take last: 7)::first();    # 6 four-hour candles back — seven, because
+    d7: (e | take last: 43)::first();   # the last row is the current bar
+
+    [ sym:      s,
+      price:    n.close,
+      atr_pct:  round(n.atr / n.close * 100, 2),
+      rsi:      (n.al = 0) then 100 else round(100 - 100 / (1 + n.ag / n.al), 1),
+      vs_ema50: round((n.close - n.ema50) / n.ema50 * 100, 2),
+      d1_pct:   round((n.close - d1.close) / d1.close * 100, 2),
+      d7_pct:   round((n.close - d7.close) / d7.close * 100, 2),
+      # distance from the mean in ATRs — the comparable number across contracts
+      stretch:  round((n.close - n.ema50) / n.atr, 2) ]
+};
+
+table(parallel(syms::map(s => () => study(s)), 8))
+| sort stretch: "desc"
