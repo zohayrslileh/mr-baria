@@ -130,17 +130,26 @@ def read_binance(symbol, interval):
         sys.exit("no USDT balance on the testnet account")
     equity = Decimal(usdt["balance"])
 
-    info = binance_public("/fapi/v1/exchangeInfo", {"symbol": symbol})["symbols"][0]
+    # The testnet ignores ?symbol= and returns all 730 instruments, so taking
+    # symbols[0] silently yields BTCUSDT's filters for every request. Select by
+    # name from the full list instead.
+    listing = binance_public("/fapi/v1/exchangeInfo", {})["symbols"]
+    info = next((x for x in listing if x["symbol"] == symbol), None)
+    if info is None:
+        sys.exit("%s is not listed on the testnet" % symbol)
     filters = {f["filterType"]: f for f in info["filters"]}
     step = Decimal(filters["LOT_SIZE"]["stepSize"])
     min_qty = Decimal(filters["LOT_SIZE"]["minQty"])
     tick = Decimal(filters["PRICE_FILTER"]["tickSize"])
     min_notional = Decimal(filters.get("MIN_NOTIONAL", {}).get("notional", "0"))
+    # market orders have their own, tighter, quantity ceiling
+    market_max = Decimal(filters.get("MARKET_LOT_SIZE", {}).get("maxQty", "0"))
+    min_price = Decimal(filters["PRICE_FILTER"]["minPrice"])
 
     rows = binance_public("/fapi/v1/klines",
                           {"symbol": symbol, "interval": interval, "limit": 200})
     candles = [(Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4])) for r in rows]
-    return equity, step, min_qty, min_notional, tick, candles
+    return equity, step, min_qty, min_notional, tick, candles, market_max, min_price
 
 
 def read_bybit(symbol, interval):
@@ -161,7 +170,7 @@ def read_bybit(symbol, interval):
                          "limit": 200})["list"]
     candles = [(Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4]))
                for r in reversed(rows)]
-    return equity, step, min_qty, min_notional, tick, candles
+    return equity, step, min_qty, min_notional, tick, candles, Decimal(0), Decimal(0)
 
 
 def main():
@@ -181,7 +190,8 @@ def main():
     args = p.parse_args()
 
     reader = read_binance if args.venue == "binance-testnet" else read_bybit
-    equity, step, min_qty, min_notional, tick, candles = reader(args.symbol, args.interval)
+    (equity, step, min_qty, min_notional, tick, candles,
+     market_max, min_price) = reader(args.symbol, args.interval)
     actual_equity = equity
     if args.equity:
         equity = Decimal(args.equity)
@@ -235,6 +245,11 @@ def main():
               % min_notional)
     if notional > equity * 5:
         print("\n  ! leverage above 5x")
+    if market_max and qty > market_max:
+        print("\n  ! quantity %s exceeds the market-order ceiling %s — split it "
+              "or use a limit order" % (qty, market_max))
+    if min_price and (q(stop, tick) < min_price or q(target, tick) < min_price):
+        print("\n  ! stop or target below the exchange minimum price %s" % min_price)
 
     print("\nreview, then run:\n")
     if args.venue == "bybit":
