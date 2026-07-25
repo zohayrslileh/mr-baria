@@ -1,0 +1,61 @@
+# The tradeable universe, defined from the exchange rather than from memory.
+#
+# An earlier version of this work hard-coded eight symbols chosen from general
+# familiarity with "the majors". Checked against the exchange, half of them
+# ranked 48th to 196th of 411 by turnover, three of them under $1m a day. The
+# names were famous; the liquidity was assumed and wrong. Worse, a
+# cross-sectional factor is measured *within* its universe, so every factor
+# result inherited that arbitrary choice.
+#
+# Sorting by turnover alone does not fix it. OKX lists commodities and
+# tokenized equities as USDT swaps, and gold is the second most traded
+# instrument on the venue — a naive top-20 contains XAU, XAG, CL, BZ and SPCX.
+# Comparing their momentum against crypto cross-sectionally is meaningless.
+#
+# `fee_group_id` separates them, and it comes from the exchange:
+#
+#   4   9 instruments, 100x leverage — the venue's own tier-1 crypto
+#   5   263 instruments, 50x        — the rest of crypto
+#   6   7 instruments, 100x         — commodities and a few equities
+#   7   132 instruments, 50x        — tokenized equities
+#
+# So crypto is groups 4 and 5, and that classification is observed, not
+# recalled. Note the venue's own majors are BTC ETH SOL DOGE HYPE XRP SUI ADA
+# PEPE — which is not the list memory produced.
+#
+#   BMO_URL=http://127.0.0.1:8080 tools/bmo -f queries/universe.bmo
+
+MIN_TURNOVER: 5000000;    # 24h quote turnover floor
+TOP_N:        24;
+TIER:         "crypto";   # "crypto" (groups 4+5) · "majors" (4) · "all"
+
+groups: (TIER = "majors") then ["4"]
+        else ((TIER = "crypto") then ["4", "5"] else ["4", "5", "6", "7"]);
+
+instruments:
+    @okx "reference.instruments", instrument_type: "SWAP"
+    | where (r) => matches(r.instrument_id, "-USDT-SWAP$")
+                   and r.state = "live"
+                   and r.fee_group_id in groups
+    | select "instrument_id", "fee_group_id", "listing_time", "maximum_leverage";
+
+tickers:
+    @okx "market.tickers", instrument_type: "SWAP"
+    | where (r) => r.volume_24h != null and r.last_price != null and r.last_price > 0
+    | extend turnover: (r) => round(r.volume_24h * r.last_price, 0)
+    | select "instrument_id", "last_price", "turnover";
+
+instruments
+| relate tickers, "instrument_id", kind: "inner"
+| extend
+    sym:        (x) => x.left.instrument_id,
+    tier:       (x) => (x.left.fee_group_id = "4") then "major" else "crypto",
+    leverage:   (x) => x.left.maximum_leverage,
+    age_days:   (x) => (x.left.listing_time = null) then 0
+                       else round((now() - x.left.listing_time) / 1d, 0),
+    price:      (x) => x.right.last_price,
+    turnover:   (x) => x.right.turnover
+| select "sym", "tier", "price", "turnover", "leverage", "age_days"
+| where (r) => r.turnover >= MIN_TURNOVER
+| sort turnover: "desc"
+| take TOP_N

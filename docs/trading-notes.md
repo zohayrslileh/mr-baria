@@ -176,6 +176,43 @@ data that showed the failure. A result found that way needs an independent
 sample before it means anything — and when it got one, it did not survive.
 Replicate before believing, not after.
 
+## The scoreboard below was computed on the wrong universe
+
+Every result in this file used a hand-written list of eight symbols chosen from
+general familiarity — BTC, ETH, SOL, XRP, DOGE, ADA, AVAX, LINK. Checked
+against the exchange, that list does not survive:
+
+| symbol | turnover rank of 411 | 24h turnover |
+|---|---|---|
+| BTC | 1 | $181bn |
+| ETH | 3 | $20.7bn |
+| SOL | 14 | $265m |
+| AVAX | 32 | $41m |
+| LINK | 48 | $10.8m |
+| XRP | **135** | **$774k** |
+| DOGE | **183** | **$283k** |
+| ADA | **196** | **$213k** |
+
+Three of the eight trade under a million dollars a day on this venue. The names
+are famous; the liquidity was assumed, and the assumption was wrong.
+
+This matters more than any single factor, because a cross-sectional factor is
+measured *within* its universe. Demeaning against a set of eight arbitrary
+instruments measures something different from what the results claim to
+measure. **The scoreboard is not valid as it stands and needs recomputing.**
+
+`queries/universe.bmo` now derives the universe from the exchange. Sorting by
+turnover alone is not enough — OKX lists commodities and tokenized equities as
+USDT swaps, and gold is the second most traded instrument on the venue, so a
+naive top-20 pulls in XAU, XAG, CL, BZ and SPCX. `fee_group_id` separates them:
+4 is the venue's own tier-1 crypto, 5 the rest of crypto, 6 commodities, 7
+tokenized equities. That classification is observed rather than recalled.
+
+The derived top-24 above $5m turnover keeps four of the original eight and adds
+names no amount of familiarity would have produced — ZEC third at $13bn, plus
+YFI, TAO, OKB, ICP, TRUMP, GIGGLE, VVV. The venue's own majors are BTC, ETH,
+SOL, DOGE, HYPE, XRP, SUI, ADA, PEPE, which is again not the remembered list.
+
 ## Factor scoreboard
 
 Everything tested so far, on 4h bars against the next 24h, outcomes divided by
