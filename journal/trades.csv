@@ -1,3 +1,8 @@
 opened_at,symbol,side,intended_entry,actual_entry,qty,intended_stop,actual_exit,closed_at,fees_paid,funding_paid,notes
 2026-07-25T22:47Z,AVAXUSDT,BUY,6.8190,6.8190,255,6.6230,6.7922,2026-07-25T23:12Z,1.3883,0,"closed early — selected by the hand-picked universe later invalidated; exit swept 10 levels 6.8020→6.7900 for 0.18% slippage; realised -6.827, fees 1.3883 round trip, net -8.2153 = 16.4% of the 50 risked"
 2026-07-25T23:15Z,KAITOUSDT,BUY,1.0050,1.006486,729.2,0.9380,,,0.3670,,"limit 1.0065 marketable, filled across 4 prints 1.0054–1.0065; stop/target use closePosition because 729.2 exceeds the 500 market-order ceiling; target 1.1433"
+2026-07-25T23:31Z,BTCUSDT,BUY,64392.90,64392.90,0.0320,63767.40,,,0.0206,,"basket for execution measurement; slippage 0.0 bps; notional 2060.57"
+2026-07-25T23:31Z,ETHUSDT,BUY,1875.71,1875.71,0.784,1850.07,,,0.0147,,"slippage 0.0 bps; notional 1470.56"
+2026-07-25T23:31Z,BCHUSDT,BUY,209.65,209.57,5.664,206.13,,,0.0119,,"slippage -3.8 bps (filled better than the ask); notional 1187.46"
+2026-07-25T23:31Z,AAVEUSDT,BUY,92.120,92.140,9.1,89.910,,,0.0084,,"slippage +2.2 bps; notional 838.29"
+2026-07-25T23:31Z,INJUSDT,BUY,5.0870,5.0900,122.7,4.9240,,,0.0062,,"slippage +5.9 bps; notional 624.17"

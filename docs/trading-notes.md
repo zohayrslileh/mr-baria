@@ -213,34 +213,64 @@ names no amount of familiarity would have produced — ZEC third at $13bn, plus
 YFI, TAO, OKB, ICP, TRUMP, GIGGLE, VVV. The venue's own majors are BTC, ETH,
 SOL, DOGE, HYPE, XRP, SUI, ADA, PEPE, which is again not the remembered list.
 
-## Factor scoreboard
+## Factor scoreboard, recomputed on the derived universe
 
-Everything tested so far, on 4h bars against the next 24h, outcomes divided by
-ATR%, sample split in half by time. A factor passes only if it keeps its sign
-in **both** halves and survives on a **second venue**.
+Rebuilt after the hand-picked universe was thrown out. 20 crypto instruments
+selected by the exchange's own `fee_group_id` and a $20m turnover floor, 4h
+bars with the in-progress candle excluded, 10,900 observations over three
+months. Every factor tested in both an absolute and a cross-sectional form, at
+24h and 48h.
 
-| factor | half A | half B | replication | verdict |
-|---|---|---|---|---|
-| trend, absolute | −0.203 | +0.014 | — | flips |
-| momentum, absolute | −0.122 | +0.069 | — | flips |
-| weekly, absolute | −0.103 | +0.029 | — | flips |
-| momentum, cross-sectional | +0.030 | +0.155 | OKX: −0.036 / +0.154 | flips on replication |
-| funding rate | −0.089 | +0.027 | — | flips |
-| open-interest change | −0.068 | −0.014 | OKX: −0.044 / +0.008 | flips on replication |
+| form | factor | horizon | all | half A | half B | |
+|---|---|---|---|---|---|---|
+| absolute | trend | 24h | +0.007 | +0.025 | −0.063 | flips |
+| absolute | mom | 24h | +0.018 | +0.048 | −0.024 | flips |
+| absolute | week | 24h | +0.013 | +0.021 | +0.005 | same sign |
+| absolute | trend | 48h | +0.007 | +0.033 | −0.108 | flips |
+| absolute | mom | 48h | +0.037 | +0.095 | −0.049 | flips |
+| absolute | week | 48h | +0.013 | +0.024 | −0.019 | flips |
+| relative | trend | 24h | +0.073 | +0.139 | −0.009 | flips |
+| relative | mom | 24h | +0.045 | +0.099 | −0.017 | flips |
+| relative | week | 24h | +0.056 | +0.115 | −0.016 | flips |
+| relative | trend | 48h | +0.086 | +0.160 | −0.014 | flips |
+| relative | mom | 48h | +0.053 | +0.124 | −0.038 | flips |
+| relative | week | 48h | +0.079 | +0.145 | −0.009 | flips |
 
-**Nothing has passed.** Two of them looked like they had until a second venue
-was tried, which is the whole reason the replication column exists.
+Eleven of twelve flip. The twelfth holds its sign only because half B is
++0.005, which is zero.
 
-Two honest qualifications. The OKX open-interest test carries only 492
-observations, because that venue's open-interest history overlaps its candle
-range poorly — it is underpowered, and a fair reading is "not confirmed"
-rather than "refuted". And every one of these lives on the same twelve liquid
-majors at one horizon; a different universe or timeframe is untested ground,
-not proven barren.
+**The signs are the reverse of the earlier run.** On the old universe and
+window, half A was negative and half B positive; here half A is positive and
+half B is not. Same factors, opposite conclusion — which is the clearest
+statement yet that what these measure is whichever regime landed in whichever
+half, not a relationship between a factor and a return.
 
-The shape repeats across all six: half B leans positive, half A does not. That
-is a description of which regime happened to fall in which half of the window,
-which is what a factor with no edge looks like when it is measured this way.
+The cross-sectional form does not rescue anything either. It looked stable
+once, failed to replicate on OKX, and now flips on the corrected universe too.
+
+## Measured execution costs
+
+First real numbers, from a five-symbol basket entered simultaneously on the
+Binance futures testnet:
+
+| symbol | notional | slippage |
+|---|---|---|
+| BTCUSDT | $2,061 | 0.0 bps |
+| ETHUSDT | $1,471 | 0.0 bps |
+| BCHUSDT | $1,187 | −3.8 bps |
+| AAVEUSDT | $838 | +2.2 bps |
+| INJUSDT | $624 | +5.9 bps |
+
+Slippage runs **inverse to notional** here, which means liquidity is what
+governs it at these sizes, not order size — the largest order paid nothing and
+the smallest paid the most. BCH filled better than the quoted ask, so the book
+moved favourably between snapshot and fill.
+
+Fees are the larger cost so far. The AVAX round trip paid 1.3883 against 50 of
+risk — 2.8% of the risk budget on a $1,739 notional, before price moved at all.
+
+Both figures come from a testnet book and should be re-measured anywhere real
+money goes.
 
 ## What would be worth testing next
 
