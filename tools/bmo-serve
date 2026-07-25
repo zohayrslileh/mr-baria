@@ -12,13 +12,14 @@
 # $BMO_BIN, or at tools/bin/bmo, and verify it before running:
 #
 #   sha256sum bmo
-#   c7d7e16e698c80fc5ff9475e77faf29ea8a5eec8e26a039ed36a9f3f7fa0c059   # v0.1.6
+#   42e480379227aca0ba1a7d46b275275ba52803ea7e15e4d4f33283fafafa221e   # v0.1.6
 #
-# Reachability note: of the 13 registered sources, only `bybit` fails from a
-# region CloudFront blocks — it returns HTTP 403 while binance, okx, kraken,
-# deribit, defillama, geckoterminal and mempool_space all answer. Queries that
-# touch Bybit still need an instance that can reach it. bmo honours HTTPS_PROXY,
-# so routing is possible if a suitable proxy exists.
+# Reachability note: from a CloudFront-blocked region `bybit` returns 403 and
+# Binance's futures endpoints return 451, while Binance spot, okx (including
+# swaps), kraken, deribit, defillama, geckoterminal and mempool_space answer.
+# OKX is the venue to build perpetual research on when the environment is
+# restricted. bmo honours HTTPS_PROXY, so routing is possible where a suitable
+# proxy exists.
 
 set -euo pipefail
 

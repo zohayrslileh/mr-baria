@@ -1,0 +1,96 @@
+# Cross-sectional momentum, replicated on OKX perpetuals.
+#
+# Same test as cross-sectional-factor.bmo on a different venue and a longer
+# window. A replication that lands in the same place is worth more than another
+# pass over the sample that produced the finding.
+#
+# It also runs anywhere: CloudFront blocks api.bybit.com by region and Binance
+# returns 451 for its futures endpoints, while OKX answers. That matters
+# because this research should not depend on a tunnel staying up.
+#
+# OKX caps candle_history at 300 rows, so four pages are fetched concurrently
+# against a known time grid — the cursors do not depend on each other, which is
+# what makes `&` the right tool rather than sequential paging.
+#
+#   tools/bmo --session-new
+#   tools/bmo -S -f queries/cross-sectional-okx.bmo
+#   tools/bmo -S '<another hypothesis against `panel`>'
+
+cl: (v, lim) => (v > lim) then lim else ((v < 0 - lim) then 0 - lim else v);
+
+syms: ["BTC-USDT-SWAP","ETH-USDT-SWAP","SOL-USDT-SWAP","XRP-USDT-SWAP",
+       "DOGE-USDT-SWAP","ADA-USDT-SWAP","AVAX-USDT-SWAP","LINK-USDT-SWAP",
+       "NEAR-USDT-SWAP","SUI-USDT-SWAP","UNI-USDT-SWAP","XLM-USDT-SWAP"];
+
+pages: (sym) => {
+    [p1, p2, p3, p4]:
+        (@okx "market.candle_history", instrument_id: sym, interval: "4H", limit: 300)
+      & (@okx "market.candle_history", instrument_id: sym, interval: "4H", limit: 300, after: now() - 50d)
+      & (@okx "market.candle_history", instrument_id: sym, interval: "4H", limit: 300, after: now() - 100d)
+      & (@okx "market.candle_history", instrument_id: sym, interval: "4H", limit: 300, after: now() - 150d);
+    p1 | union p2, p3, p4 | sort "open_time"
+};
+
+per: (sym) => (
+    pages(sym)
+    | where "close"
+    | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+    | extend tr: (r) => (r.pc = null) then r.high - r.low
+                        else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])
+    | accumulate
+        ema50: (s, r) => round((s = null) then r.close else 2/51 * r.close + 49/51 * s, 8),
+        atr:   (s, r) => round((s = null) then r.tr    else (s * 13 + r.tr) / 14, 8)
+    # past context and future outcome from explicit frames — no lookahead
+    | window 42, 12,
+        b6:  (b, r, a) => (count(b) = 42) then list(b)[36].close,
+        b42: (b, r, a) => (count(b) = 42) then list(b)[0].close,
+        f6:  (b, r, a) => (count(a) = 12) then round((list(a)[5].close - r.close) / r.close * 100, 6)
+    | where (r) => r.b6 != null and r.f6 != null and r.atr > 0
+    | extend ap: (r) => r.atr / r.close * 100
+    | extend
+        trend: (r) => cl((r.close - r.ema50) / r.ema50 * 100 / r.ap, 2),
+        mom:   (r) => cl((r.close - r.b6) / r.b6 * 100 / r.ap, 2),
+        z6:    (r) => round(r.f6 / r.ap, 6)
+    | rank (r) => r.open_time, name: "seq", kind: "ordinal"
+    | extend half: (r) => (r.seq <= self::count() / 2) then "A" else "B"
+    | select "open_time", "half", "trend", "mom", "z6"
+);
+
+panel: table(parallel(syms::map(s => () => per(s)), 6)
+             ::reduce([], (acc, t) => acc + list(t)));
+
+# demean within each timestamp: what is left is relative, with the shared
+# market move — the component that flips regime — removed
+xs: panel
+  | group "open_time"
+  | extend mm: (g) => g.rows::avg("mom"),
+           mz: (g) => g.rows::avg("z6"),
+           n:  (g) => g.rows::count()
+  | where (r) => r.n >= 8
+  | expand (r) => (
+        r.rows
+        # round the demeaned values: correlation squares them, and a chain of
+        # exact-Decimal arithmetic overflows the 128-digit bound without this
+        | extend dmom: (x) => round(x.mom - r.mm, 8), dz: (x) => round(x.z6 - r.mz, 8)
+        | rank "dmom", name: "rk", kind: "ordinal"
+        | extend q: (x) => (x.rk <= r.n / 3) then "1 weakest"
+                     else ((x.rk <= r.n * 2 / 3) then "2 middle" else "3 strongest")
+        | select "half", "q", "dmom", "dz"
+    );
+
+bucket: (h) => (
+    ((h = "all") then xs else (xs | where half: h))
+    | group "q"
+    | extend n: (g) => g.rows::count(), mean_rel: (g) => round(g.rows::avg("dz"), 4)
+    | rename key: "q"
+    | select "q", "n", "mean_rel"
+    | sort "q"
+);
+
+[ observations: xs::count(),
+  correlation:  [ all: round(xs::correlation("dmom", "dz"), 4),
+                  A:   round((xs | where half: "A")::correlation("dmom", "dz"), 4),
+                  B:   round((xs | where half: "B")::correlation("dmom", "dz"), 4) ],
+  terciles:     [ all: bucket("all")::list(),
+                  A:   bucket("A")::list(),
+                  B:   bucket("B")::list() ] ]

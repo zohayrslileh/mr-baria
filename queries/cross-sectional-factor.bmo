@@ -5,6 +5,11 @@
 # timestamp removes the market move — which is the part that flips — and what
 # remains is purely relative performance.
 #
+# Uses Binance USD-M perpetuals rather than Bybit, so the research runs
+# anywhere — including regions where CloudFront blocks api.bybit.com. The two
+# venues price the same contracts within about 1 bp (cross-venue-spread.bmo),
+# which is far below the factor magnitudes here.
+#
 # Best run inside a session, so the panel is built once and hypotheses are
 # tested against it in milliseconds:
 #
@@ -18,8 +23,8 @@ syms: ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT",
        "AVAXUSDT","LINKUSDT","NEARUSDT","SUIUSDT","UNIUSDT","XLMUSDT"];
 
 per: (sym) => (
-    ((@bybit "market.klines", category: "linear", symbol: sym,
-             interval: "4h", limit: 1000) | sort "open_time")
+    ((@binance "futures.usds.klines", symbol: sym,
+               interval: "4h", limit: 1000) | sort "open_time")
     | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
     | extend tr: (r) => (r.pc = null) then r.high - r.low
                         else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])

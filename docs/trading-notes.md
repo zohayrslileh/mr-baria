@@ -128,15 +128,14 @@ forward window, consecutive observations share five bars, so 11,424 rows carry
 closer to 1,900 independent observations. Significance is weaker than the row
 count suggests.
 
-## One thing did survive: cross-sectional momentum
+## Cross-sectional momentum looked promising, then failed replication
 
 Every *absolute* price factor flips sign between halves — trend, momentum and
-the weekly measure alike, at both the 24h and 48h horizon. That is not a
-weighting problem; it is the market move itself reversing regime, and it sits
-inside every one of them.
+the weekly measure alike, at both horizons. The flipping component is the
+market move itself, shared by all of them.
 
-Subtracting the cross-sectional mean at each timestamp removes exactly that
-shared component. What remains is relative performance, and it holds its sign:
+Subtracting the cross-sectional mean at each timestamp removes that shared
+component, and on the Bybit sample what remained held its sign:
 
 | factor | all | half A | half B |
 |---|---|---|---|
@@ -145,40 +144,46 @@ shared component. What remains is relative performance, and it holds its sign:
 | trend, relative | +0.112 | +0.029 | +0.158 |
 | momentum, relative | +0.113 | +0.030 | +0.155 |
 
-Sorting the cross-section into terciles by relative momentum, the mean forward
-*relative* move in ATR units:
+Tercile spread, top minus bottom, in ATR units: +0.154 pooled, +0.021 in half
+A, +0.287 in half B. Same direction in both halves — which is more than
+anything else here had managed.
 
-| tercile | all | half A | half B |
+**It does not replicate.** `queries/cross-sectional-okx.bmo` runs the identical
+test on OKX perpetuals over roughly 200 days, 13,752 observations against the
+original 11,352:
+
+| | all | half A | half B |
 |---|---|---|---|
-| weakest | −0.052 | +0.002 | −0.105 |
-| middle | −0.051 | −0.025 | −0.077 |
-| strongest | +0.103 | +0.023 | +0.182 |
-| **top − bottom** | **+0.154** | **+0.021** | **+0.287** |
+| correlation | +0.094 | **−0.036** | +0.154 |
+| tercile spread | +0.107 | **−0.061** | +0.275 |
 
-Same direction in both halves — the first thing here that has managed that.
+Half A is negative. The +0.029 that made the Bybit sample look stable was
+sitting on top of zero, and a longer independent sample puts it on the other
+side.
 
-**But read the magnitudes before getting excited.** Half B's +0.287 ATR is
-about 0.57% per 24h on a 2% ATR, which clears costs. Half A's +0.021 ATR is
-roughly 0.04%, against a round trip that costs 0.11% per leg — and this is a
-two-leg trade, long the top and short the bottom, so about 0.22%. In that half
-the edge does not pay for itself. Direction is stable; size is not.
+Read the two together and the pattern is plain: **half B is positive in both
+samples, half A is not.** What the factor tracks is the regime that happened to
+prevail recently, not a relationship that holds. That is the same failure the
+absolute factors had, one level down — and it is exactly why the demeaning
+looked like a fix rather than being one.
 
-Three further caveats. Overlapping windows mean 11,352 rows carry closer to
-1,900 independent observations. The demeaning was chosen after watching the
-absolute factors fail, so some selection crept in. And a market-neutral pair
-needs two positions, which on a $500 account is two lots of minimum size.
+So: nothing here has an edge that survives out-of-sample. The correct posture
+remains the one at the top of this file.
 
-Worth pursuing, not worth betting on yet. `queries/cross-sectional-factor.bmo`
-reproduces all of it.
+**A methodological note, since it cost a round of false confidence.** The
+demeaning was chosen *after* watching the absolute factors fail, on the same
+data that showed the failure. A result found that way needs an independent
+sample before it means anything — and when it got one, it did not survive.
+Replicate before believing, not after.
 
 ## What would be worth testing next
 
 - Funding and open-interest factors on their **history** rather than the
   current snapshot — both are available per-bar and neither was validated
   above.
-- Whether the tercile spread survives realistic costs in the weak regime —
-  the question that decides whether cross-sectional momentum is tradeable at
-  all, and one only live fills can answer.
+- Anything that is not a price factor. Both the absolute and the relative
+  price measures have now failed the same way, on two venues. Funding and
+  open-interest history are available per-bar and neither has been tested.
 - Longer horizons. Everything above is 24h and 48h; a 4h series supports a
   week or more.
 - A funding-carry basis trade, which does not depend on predicting price at

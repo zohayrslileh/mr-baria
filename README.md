@@ -46,7 +46,8 @@ queries/strategy-engine.bmo      parameterized backtest, strategies as values
 queries/bybit-perp-scan.bmo      Bybit USDT perp screen, ATR-sized
 queries/factor-validation.bmo    do the screen factors predict anything?
 queries/factor-robustness.bmo    same factors, split by time
-queries/cross-sectional-factor.bmo  the one factor that survived
+queries/cross-sectional-factor.bmo  relative momentum, Bybit sample
+queries/cross-sectional-okx.bmo  the same test on OKX — it fails there
 docs/trading-notes.md            what the screen survived, and what it did not
 docs/bybit-connect.md            OAuth AI sub-account setup, and the geo-block
 tools/bybit-api                  signed Bybit V5 client, dry-run by default
@@ -63,7 +64,7 @@ Running it here removes the dependency on a tunnel staying up:
 ```bash
 cp /path/to/bmo tools/bin/bmo && chmod +x tools/bin/bmo
 sha256sum tools/bin/bmo
-# c7d7e16e698c80fc5ff9475e77faf29ea8a5eec8e26a039ed36a9f3f7fa0c059   v0.1.6
+# 42e480379227aca0ba1a7d46b275275ba52803ea7e15e4d4f33283fafafa221e   v0.1.6 (sessions)
 
 tools/bmo-serve start
 export BMO_URL="http://127.0.0.1:8080"
@@ -71,9 +72,11 @@ export BMO_URL="http://127.0.0.1:8080"
 
 The binary is not tracked — `tools/bin/.gitignore` keeps it out.
 
-**One source is unreachable from a CloudFront-blocked region.** `bybit` returns
-HTTP 403; `binance`, `okx`, `kraken`, `deribit`, `defillama`, `geckoterminal`
-and `mempool_space` all answer. So:
+**Two endpoints are unreachable from a CloudFront-blocked region.** `bybit`
+returns HTTP 403 and Binance's *futures* endpoints return 451; Binance spot,
+`okx` (including swaps), `kraken`, `deribit`, `defillama`, `geckoterminal` and
+`mempool_space` all answer. OKX is therefore the venue to build perpetual
+research on when the environment is restricted. So:
 
 | runs locally | needs a Bybit-capable instance |
 |---|---|
@@ -125,10 +128,12 @@ are meant to be read as worked examples as much as run.
 ## Before trading off any of this
 
 `docs/trading-notes.md` is not optional reading. The short version: the
-screen's momentum ranking was tested against forward returns and does not
-hold up — its sign flips between the two halves of the sample, at an R² of
-0.002. Use the screen for sizing, volatility-aware stops and context; do not
-trade its ranking. bmo is read-only and cannot place an order.
+screen's momentum ranking was tested against forward returns and does not hold
+up — its sign flips between the two halves of the sample, at an R² of 0.002.
+A cross-sectional version looked stable on one sample and then failed to
+replicate on another venue over a longer window. Nothing here has an edge that
+survives out-of-sample. Use the screen for sizing, volatility-aware stops and
+context; do not trade its ranking. bmo is read-only and cannot place an order.
 
 ## Notes before writing queries
 

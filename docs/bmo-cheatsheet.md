@@ -101,7 +101,20 @@ Round every recurrence at the precision you actually need:
 ```
 
 This applies to EMA, Wilder smoothing, running products — anything whose
-state feeds back into itself. Windowed aggregates (`rolling`) are unaffected.
+state feeds back into itself.
+
+It is not only recurrences. **Any chain of exact arithmetic can reach the
+bound**, and aggregates that square their inputs are a common trigger:
+
+```
+| extend d: (x) => x.value - group_mean      # 60+ digit differences
+... ::correlation("d", "e")
+# eval error: decimal multiplication exceeds the decimal range   [verified]
+```
+
+Round wherever precision stops being meaningful — `round(x.value - mean, 8)`
+here — rather than only inside folds. `rolling` is unaffected because its
+declared statistics manage their own accumulation.
 
 ### There is no truthiness
 
