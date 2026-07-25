@@ -272,6 +272,57 @@ risk — 2.8% of the risk budget on a $1,739 notional, before price moved at all
 Both figures come from a testnet book and should be re-measured anywhere real
 money goes.
 
+## Cross-venue funding basis: real, and still not tradeable
+
+The last idea with a structural rather than predictive basis. The same
+perpetual funds at different rates on different venues; being long where
+funding favours longs and short where it favours shorts collects the difference
+with no view on price at all.
+
+287 settlements of BTC perpetual funding on Binance, Bybit and OKX over 95
+days, aligned with `align … within: 1h` because the settlement stamps drift
+between venues by milliseconds.
+
+| pair | mean APR | half A | half B | sd | % positive | |
+|---|---|---|---|---|---|---|
+| Binance − Bybit | +0.90% | +0.39% | +1.42% | 4.50 | 57.8% | same sign |
+| Binance − OKX | +0.60% | −0.35% | +1.55% | 4.19 | 55.7% | flips |
+| Bybit − OKX | −0.30% | −0.74% | +0.13% | 4.96 | 47.0% | flips |
+
+One pair holds its sign. Its standard deviation is five times its mean, and it
+is positive on 57.8% of settlements — barely better than a coin.
+
+**Conditioning on a wide spread does work**, which is more than any price
+factor managed. Entering only when the gap exceeds 5% APR:
+
+| | n | at entry | next 1d | next 3d | next 7d |
+|---|---|---|---|---|---|
+| entered | 69 | 7.46% | 2.57% | 1.55% | 0.66% |
+| skipped | 191 | 2.18% | 0.67% | 0.51% | 0.21% |
+
+Roughly four times the carry of not filtering, monotonic across buckets and
+symmetric on both sides — 82% of very-wide-positive readings kept their sign
+over the next day, 78% of very-wide-negative ones. This is what a real effect
+looks like, and it is the only one in this file.
+
+**It is still an order of magnitude too small.**
+
+| hold | collected | taker cost | net |
+|---|---|---|---|
+| 1 day | +0.0070% | 0.20% | **−0.193%** |
+| 3 days | +0.0128% | 0.20% | **−0.187%** |
+| 7 days | +0.0126% | 0.20% | **−0.187%** |
+
+The 0.20% is two legs, in and out, at 0.05% a side. Break-even at the decayed
+seven-day rate is 111 days of holding, and the spread is gone long before
+that. At maker fees of roughly 0.02% a side it is 0.08% round trip, which still
+needs a fortnight of holding against an edge that halves within a day.
+
+So the honest reading: the effect is genuine and well behaved, and it is
+20–30x below the cost of crossing the spread to capture it. That is consistent
+with funding arbitrage being a market-maker's trade — earned on rebates and
+resting orders, not by paying to cross twice on two venues.
+
 ## What would be worth testing next
 
 - Funding and open-interest factors on their **history** rather than the
@@ -283,9 +334,8 @@ money goes.
   the split means something.
 - A different horizon. 24h was chosen once and never revisited. Carry-shaped
   ideas plausibly need days, not hours.
-- The funding basis between venues, which does not require predicting price at
-  all — `queries/funding-spread.bmo` shows 4–8% annualised dispersion on the
-  same contract.
+- Whether any of this changes at maker fees with resting orders, which is the
+  only cost structure under which the funding basis has ever made sense.
 - Longer horizons. Everything above is 24h and 48h; a 4h series supports a
   week or more.
 - A funding-carry basis trade, which does not depend on predicting price at

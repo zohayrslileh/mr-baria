@@ -1,0 +1,75 @@
+# Cross-venue funding basis: the one real effect found here, and why it still
+# does not pay.
+#
+# The same perpetual funds at different rates on different venues. Being long
+# where funding favours longs and short where it favours shorts collects the
+# difference without any view on price — which is why it was the last idea
+# standing after every price factor failed.
+#
+# Needs an instance that reaches Binance, Bybit and OKX at once.
+#
+#   tools/bmo --session-new
+#   tools/bmo -S -f queries/funding-basis.bmo
+#   tools/bmo -S '<further hypotheses against `panel2`>'
+
+sg: (v) => (v > 0) then 1 else ((v < 0) then 0 - 1 else 0);
+ann: (r) => r * 3 * 365 * 100;      # all three settle every 8h
+
+[bn, by, ok]:
+    (@binance "futures.usds.funding_rates", symbol: "BTCUSDT", limit: 1000)
+  & (@bybit   "market.funding_rates", category: "linear", symbol: "BTCUSDT", limit: 1000)
+  & (@okx     "funding.history", instrument_id: "BTC-USDT-SWAP", limit: 1000);
+
+B: bn | sort "funding_time" | select funding_time: "t", funding_rate: "r";
+Y: by | sort "time"         | select time: "t",         funding_rate: "r";
+O: ok | sort "funding_time" | select funding_time: "t", funding_rate: "r";
+
+# settlement stamps drift by milliseconds between venues, so align rather than
+# join on equality — `relate` would silently drop most of the sample
+panel2: B
+ | align Y, "t", direction: "nearest", within: 1h, kind: "inner"
+ | extend t: (x) => x.left.t, bn: (x) => x.left.r, by: (x) => x.right.r
+ | select "t", "bn", "by"
+ | align O, "t", direction: "nearest", within: 1h, kind: "inner"
+ | extend t:  (x) => x.left.t,
+          bn: (x) => round(ann(x.left.bn), 4),
+          by: (x) => round(ann(x.left.by), 4),
+          ok: (x) => round(ann(x.right.r), 4)
+ | select "t", "bn", "by", "ok"
+ | extend bn_by: (r) => round(r.bn - r.by, 4),
+          bn_ok: (r) => round(r.bn - r.ok, 4),
+          by_ok: (r) => round(r.by - r.ok, 4)
+ | rank (r) => r.t, name: "seq", kind: "ordinal"
+ | extend half: (r) => (r.seq <= self::count() / 2) then "A" else "B";
+
+# does entering only on a wide spread earn more than entering on any spread,
+# and how fast does it decay?
+decay: panel2
+ | window 0, 3,  a1: (b, r, a) => (count(a) = 3)  then round(avg(a, "bn_by"), 4)
+ | window 0, 9,  a3: (b, r, a) => (count(a) = 9)  then round(avg(a, "bn_by"), 4)
+ | window 0, 21, a7: (b, r, a) => (count(a) = 21) then round(avg(a, "bn_by"), 4)
+ | where (r) => r.a7 != null and r.bn_by != 0
+ | extend s: (r) => sg(r.bn_by),
+          wide: (r) => (abs(r.bn_by) > 5) then "entered" else "skipped"
+ | group "wide"
+ | extend n:   (g) => g.rows::count(),
+          now: (g) => round(g.rows::avg((x) => abs(x.bn_by)), 3),
+          d1:  (g) => round(g.rows::avg((x) => x.s * x.a1), 3),
+          d3:  (g) => round(g.rows::avg((x) => x.s * x.a3), 3),
+          d7:  (g) => round(g.rows::avg((x) => x.s * x.a7), 3)
+ | rename key: "wide"
+ | select "wide", "n", "now", "d1", "d3", "d7";
+
+pair: (f) => {
+    a: (panel2 | where half: "A"); b: (panel2 | where half: "B");
+    mA: round(a::avg(f), 3); mB: round(b::avg(f), 3);
+    [ pair: f, mean_apr: round(panel2::avg(f), 3), A: mA, B: mB,
+      sd: round(panel2::stddev(f), 3),
+      pct_positive: round((panel2 | where (r) => r[f] > 0)::count()
+                          / panel2::count() * 100, 1),
+      stable: ((mA > 0 and mB > 0) or (mA < 0 and mB < 0)) then "same sign" else "flips" ]
+};
+
+[ settlements: panel2::count(),
+  spreads:     table([pair("bn_by"), pair("bn_ok"), pair("by_ok")])::list(),
+  decay:       decay::list() ]
