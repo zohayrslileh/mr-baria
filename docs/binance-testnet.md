@@ -66,6 +66,34 @@ Note `MIN_NOTIONAL` is 50 USDT on BTCUSDT here, ten times Bybit's floor. At 1%
 risk on a $500 account an ATR-wide stop still lands well above it, but a
 tighter stop or a smaller account would not.
 
+## Which tool reads what
+
+`binance-cli` is for the account and for execution. bmo is for analysis. The
+split is not stylistic:
+
+| layer | tool | source |
+|---|---|---|
+| research and screening | bmo | the real market |
+| account state | `binance-cli` | testnet |
+| trade sizing | `tools/plan-trade` | live equity + one symbol's ATR |
+| execution | `binance-cli` | testnet |
+
+Twelve symbols of 500 4h candles is 843,957 bytes of raw JSON against 801 bytes
+for the same question answered inside bmo — about 1000x. Beyond the size, raw
+candles arrive uncomputed, so every indicator would be reimplemented against
+what bmo already has in `rolling`, `accumulate`, `align` and `correlation`, and
+every rerun refetches. And `binance-cli` sees only Binance, while the funding
+work needed three venues at once.
+
+The reverse is equally firm: bmo reads public market data only. It cannot see a
+balance, a position or an order, which is exactly what `binance-cli` is for.
+
+**Analyse the real market, not testnet.** Testnet klines track real prices to
+about 0.04%, but the venue underneath is synthetic — running research on its
+candles means studying a simulated order book. `plan-trade` does read ATR from
+testnet, because a single symbol is ~10 KB and the stop should match the venue
+the order lands on; if the two ever diverge, move that read to bmo.
+
 ## What testnet does and does not measure
 
 **Does:** order and stop mechanics, whether reduce-only behaves, funding
