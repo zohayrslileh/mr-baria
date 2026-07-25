@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 """Turn a symbol and a direction into a correctly sized, ready-to-review order.
 
-    tools/plan-trade --symbol BTCUSDT --side Buy [--risk-pct 1] [--atr-stop 1.5] [--rr 2]
+    tools/plan-trade --symbol BTCUSDT --side Buy [--venue binance-testnet]
+                     [--risk-pct 1] [--atr-stop 1.5] [--rr 2]
 
 You choose the direction. This does the arithmetic: live equity from the
 account, Wilder ATR from the exchange's own candles, and its quantity step and
 minimum order size — then sizes the position so that price reaching the stop
 costs exactly the intended fraction of equity.
 
-Direction is deliberately not automated. The screen's ranking was tested against
-forward returns and its sign flips between halves of the sample — see
-docs/trading-notes.md — so it is not a basis for picking a side. The sizing
-arithmetic below holds regardless of where the view comes from.
+Direction is deliberately not automated. Every factor tested so far flips sign
+between halves of the sample — see the scoreboard in docs/trading-notes.md — so
+none of them is a basis for choosing a side. The sizing arithmetic holds
+whatever the view is and wherever it comes from.
 
-Nothing is sent. It prints the tools/bybit-api command to run.
+Nothing is sent. It prints the command to review and run.
 
-Everything comes from Bybit's own V5 API, so this needs only the one
-connection that places orders — no dependency on the bmo instance.
+Two venues:
 
-Environment: BYBIT_API_BASE, BYBIT_CRED_DIR
+  binance-testnet  reads testnet.binancefuture.com and emits `binance-cli`
+                   commands — the official Binance CLI does the execution
+  bybit            reads Bybit V5 through BYBIT_API_BASE and emits
+                   tools/bybit-api commands
+
+Environment: BYBIT_API_BASE and BYBIT_CRED_DIR for bybit;
+BINANCE_API_KEY and BINANCE_SECRET_KEY for binance-testnet.
 """
 
 import argparse
@@ -32,7 +38,7 @@ import urllib.parse
 import urllib.request
 from decimal import Decimal, ROUND_DOWN
 
-# bmo interval names to the codes V5 expects
+# bmo interval names to the codes Bybit V5 expects; Binance takes them as-is
 INTERVALS = {"1m": "1", "5m": "5", "15m": "15", "30m": "30",
              "1h": "60", "2h": "120", "4h": "240", "6h": "360",
              "12h": "720", "1d": "D", "1w": "W"}
@@ -87,6 +93,77 @@ def bybit_get(path, params):
     return body["result"]
 
 
+BINANCE_TESTNET = "https://testnet.binancefuture.com"
+
+
+def binance_signed(path, params):
+    """Signed Binance USD-M futures call. Binance signs the query string and
+    appends the signature, where Bybit signs a header — same HMAC, different
+    placement."""
+    key = os.environ.get("BINANCE_API_KEY")
+    secret = os.environ.get("BINANCE_SECRET_KEY")
+    if not key or not secret:
+        sys.exit("set BINANCE_API_KEY and BINANCE_SECRET_KEY "
+                 "(testnet keys from testnet.binancefuture.com)")
+    params = dict(params, timestamp=str(int(time.time() * 1000)), recvWindow="5000")
+    qs = urllib.parse.urlencode(params)
+    sig = hmac.new(secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
+    url = "%s%s?%s&signature=%s" % (BINANCE_TESTNET, path, qs, sig)
+    req = urllib.request.Request(url, headers={"X-MBX-APIKEY": key})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        sys.exit("binance error: %s" % exc.read().decode(errors="replace")[:300])
+
+
+def binance_public(path, params):
+    url = BINANCE_TESTNET + path + "?" + urllib.parse.urlencode(params)
+    with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as response:
+        return json.load(response)
+
+
+def read_binance(symbol, interval):
+    balances = binance_signed("/fapi/v2/balance", {})
+    usdt = next((b for b in balances if b["asset"] == "USDT"), None)
+    if usdt is None:
+        sys.exit("no USDT balance on the testnet account")
+    equity = Decimal(usdt["balance"])
+
+    info = binance_public("/fapi/v1/exchangeInfo", {"symbol": symbol})["symbols"][0]
+    filters = {f["filterType"]: f for f in info["filters"]}
+    step = Decimal(filters["LOT_SIZE"]["stepSize"])
+    min_qty = Decimal(filters["LOT_SIZE"]["minQty"])
+    tick = Decimal(filters["PRICE_FILTER"]["tickSize"])
+    min_notional = Decimal(filters.get("MIN_NOTIONAL", {}).get("notional", "0"))
+
+    rows = binance_public("/fapi/v1/klines",
+                          {"symbol": symbol, "interval": interval, "limit": 200})
+    candles = [(Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4])) for r in rows]
+    return equity, step, min_qty, min_notional, tick, candles
+
+
+def read_bybit(symbol, interval):
+    equity = Decimal(bybit_get("/v5/account/wallet-balance",
+                               {"accountType": "UNIFIED"})["list"][0]["totalEquity"])
+    instrument = bybit_public("/v5/market/instruments-info",
+                              {"category": "linear", "symbol": symbol})["list"][0]
+    lot = instrument["lotSizeFilter"]
+    step = Decimal(lot["qtyStep"])
+    min_qty = Decimal(lot["minOrderQty"])
+    min_notional = Decimal(lot.get("minNotionalValue") or "0")
+    tick = Decimal(instrument["priceFilter"]["tickSize"])
+
+    # V5 returns candles newest first; ATR needs them oldest first
+    rows = bybit_public("/v5/market/kline",
+                        {"category": "linear", "symbol": symbol,
+                         "interval": INTERVALS.get(interval, interval),
+                         "limit": 200})["list"]
+    candles = [(Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4]))
+               for r in reversed(rows)]
+    return equity, step, min_qty, min_notional, tick, candles
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -96,27 +173,13 @@ def main():
     p.add_argument("--atr-stop", type=float, default=1.5)
     p.add_argument("--rr", type=float, default=2.0)
     p.add_argument("--interval", default="4h")
+    p.add_argument("--venue", default="binance-testnet",
+                   choices=["binance-testnet", "bybit"])
     args = p.parse_args()
 
-    equity = Decimal(bybit_get("/v5/account/wallet-balance",
-                               {"accountType": "UNIFIED"})["list"][0]["totalEquity"])
+    reader = read_binance if args.venue == "binance-testnet" else read_bybit
+    equity, step, min_qty, min_notional, tick, candles = reader(args.symbol, args.interval)
     budget = equity * Decimal(str(args.risk_pct)) / 100
-
-    instrument = bybit_public("/v5/market/instruments-info",
-                              {"category": "linear", "symbol": args.symbol})["list"][0]
-    lot = instrument["lotSizeFilter"]
-    step = Decimal(lot["qtyStep"])
-    min_qty = Decimal(lot["minOrderQty"])
-    min_notional = Decimal(lot.get("minNotionalValue") or "0")
-    tick = Decimal(instrument["priceFilter"]["tickSize"])
-
-    # V5 returns candles newest first; ATR needs them oldest first
-    rows = bybit_public("/v5/market/kline",
-                        {"category": "linear", "symbol": args.symbol,
-                         "interval": INTERVALS.get(args.interval, args.interval),
-                         "limit": 200})["list"]
-    candles = [(Decimal(r[1]), Decimal(r[2]), Decimal(r[3]), Decimal(r[4]))
-               for r in reversed(rows)]
     price = candles[-1][3]
     atr = wilder_atr(candles)
     atr_pct = (atr / price * 100).quantize(Decimal("0.001"))
@@ -139,7 +202,7 @@ def main():
     def q(value, unit):
         return value.quantize(unit, rounding=ROUND_DOWN)
 
-    print("%s  %s" % (args.symbol, args.side.upper()))
+    print("%s  %s  on %s" % (args.symbol, args.side.upper(), args.venue))
     print("  equity           %s   risking %s%% = %s" % (
         equity, args.risk_pct, q(budget, Decimal("0.01"))))
     print("  price            %s   ATR(%s) %s (%s%%)" % (
@@ -164,9 +227,28 @@ def main():
         print("\n  ! leverage above 5x")
 
     print("\nreview, then run:\n")
-    print("  tools/bybit-api order --symbol %s --side %s --qty %s \\\n"
-          "                        --stop %s --take-profit %s --yes"
-          % (args.symbol, args.side, qty, q(stop, tick), q(target, tick)))
+    if args.venue == "bybit":
+        print("  tools/bybit-api order --symbol %s --side %s --qty %s \\\n"
+              "                        --stop %s --take-profit %s --yes"
+              % (args.symbol, args.side, qty, q(stop, tick), q(target, tick)))
+    else:
+        side = args.side.upper()
+        opposite = "SELL" if side == "BUY" else "BUY"
+        # Binance keeps the entry and its protective orders separate, so the
+        # stop and target are their own reduce-only algo orders
+        print("  binance-cli futures-usds new-order --symbol %s \\\n"
+              "      --side %s --type MARKET --quantity %s"
+              % (args.symbol, side, qty))
+        print()
+        print("  binance-cli futures-usds new-algo-order --symbol %s \\\n"
+              "      --side %s --type STOP_MARKET --stop-price %s \\\n"
+              "      --quantity %s --reduce-only true"
+              % (args.symbol, opposite, q(stop, tick), qty))
+        print()
+        print("  binance-cli futures-usds new-algo-order --symbol %s \\\n"
+              "      --side %s --type TAKE_PROFIT_MARKET --stop-price %s \\\n"
+              "      --quantity %s --reduce-only true"
+              % (args.symbol, opposite, q(target, tick), qty))
 
 
 if __name__ == "__main__":

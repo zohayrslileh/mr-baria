@@ -50,6 +50,8 @@ queries/cross-sectional-factor.bmo  relative momentum, Bybit sample
 queries/cross-sectional-okx.bmo  the same test on OKX — it fails there
 docs/trading-notes.md            what the screen survived, and what it did not
 docs/bybit-connect.md            OAuth AI sub-account setup, and the geo-block
+docs/binance-testnet.md          futures testnet: reachable, and what it proves
+tools/plan-trade                 ATR-sized order, for review — never sent
 tools/bybit-api                  signed Bybit V5 client, dry-run by default
 tools/snapshot                   append the screen to the out-of-sample journal
 tools/forward-test               score that journal against what happened
