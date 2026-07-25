@@ -1,0 +1,78 @@
+# Cross-sectional momentum: the first factor that survived a split-sample test.
+#
+# Absolute price factors all flip sign between halves of the sample (see
+# factor-robustness.bmo). Subtracting the cross-sectional mean at each
+# timestamp removes the market move — which is the part that flips — and what
+# remains is purely relative performance.
+#
+# Best run inside a session, so the panel is built once and hypotheses are
+# tested against it in milliseconds:
+#
+#   tools/bmo --session-new
+#   tools/bmo -S -f queries/cross-sectional-factor.bmo
+#   tools/bmo -S '<another hypothesis against `panel`>'
+
+cl: (v, lim) => (v > lim) then lim else ((v < 0 - lim) then 0 - lim else v);
+
+syms: ["BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","ADAUSDT",
+       "AVAXUSDT","LINKUSDT","NEARUSDT","SUIUSDT","UNIUSDT","XLMUSDT"];
+
+per: (sym) => (
+    ((@bybit "market.klines", category: "linear", symbol: sym,
+             interval: "4h", limit: 1000) | sort "open_time")
+    | window 1, 0, pc: (b, r, a) => list(b)?[0]?.close
+    | extend tr: (r) => (r.pc = null) then r.high - r.low
+                        else max([r.high - r.low, abs(r.high - r.pc), abs(r.low - r.pc)])
+    | accumulate
+        ema50: (s, r) => round((s = null) then r.close else 2/51 * r.close + 49/51 * s, 8),
+        atr:   (s, r) => round((s = null) then r.tr    else (s * 13 + r.tr) / 14, 8)
+    # past context and future outcome from explicit frames — no lookahead
+    | window 42, 12,
+        b6:  (b, r, a) => (count(b) = 42) then list(b)[36].close,
+        b42: (b, r, a) => (count(b) = 42) then list(b)[0].close,
+        f6:  (b, r, a) => (count(a) = 12) then round((list(a)[5].close - r.close) / r.close * 100, 6)
+    | where (r) => r.b6 != null and r.f6 != null and r.atr > 0
+    | extend ap: (r) => r.atr / r.close * 100
+    | extend
+        trend: (r) => cl((r.close - r.ema50) / r.ema50 * 100 / r.ap, 2),
+        mom:   (r) => cl((r.close - r.b6) / r.b6 * 100 / r.ap, 2),
+        z6:    (r) => round(r.f6 / r.ap, 6)
+    | rank (r) => r.open_time, name: "seq", kind: "ordinal"
+    | extend half: (r) => (r.seq <= self::count() / 2) then "A" else "B"
+    | select "open_time", "half", "trend", "mom", "z6"
+);
+
+panel: table(parallel(syms::map(s => () => per(s)), 6)
+             ::reduce([], (acc, t) => acc + list(t)));
+
+# demean within each timestamp, then split the cross-section into terciles
+xs: panel
+  | group "open_time"
+  | extend mm: (g) => g.rows::avg("mom"),
+           mz: (g) => g.rows::avg("z6"),
+           n:  (g) => g.rows::count()
+  | where (r) => r.n >= 8
+  | expand (r) => (
+        r.rows
+        | extend dmom: (x) => x.mom - r.mm, dz: (x) => x.z6 - r.mz
+        | rank "dmom", name: "rk", kind: "ordinal"
+        | extend q: (x) => (x.rk <= r.n / 3) then "1 weakest"
+                     else ((x.rk <= r.n * 2 / 3) then "2 middle" else "3 strongest")
+        | select "half", "q", "dmom", "dz"
+    );
+
+bucket: (h) => (
+    ((h = "all") then xs else (xs | where half: h))
+    | group "q"
+    | extend n: (g) => g.rows::count(), mean_rel: (g) => round(g.rows::avg("dz"), 4)
+    | rename key: "q"
+    | select "q", "n", "mean_rel"
+    | sort "q"
+);
+
+[ correlation: [ all: round(xs::correlation("dmom", "dz"), 4),
+                 A:   round((xs | where half: "A")::correlation("dmom", "dz"), 4),
+                 B:   round((xs | where half: "B")::correlation("dmom", "dz"), 4) ],
+  terciles:    [ all: bucket("all")::list(),
+                 A:   bucket("A")::list(),
+                 B:   bucket("B")::list() ] ]

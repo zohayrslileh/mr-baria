@@ -7,7 +7,20 @@
 #   tools/bmo -s 'wait(5s)'       stream lifecycle events over SSE
 #   tools/bmo -r '@docs "map"'    raw markdown (for @docs and "describe" pages)
 #
-# Flags combine with -f, e.g. tools/bmo -t -f queries/indicators.bmo
+# Session mode — bindings survive between calls, so expensive data is fetched
+# once and every later query reuses it. `$` is the previous successful output.
+#
+#   tools/bmo -S 'k: @binance …'  run inside the session (created on first use)
+#   tools/bmo -S '$ | take 5'     the previous result, no refetch
+#   tools/bmo --session-new       start a fresh session
+#   tools/bmo --session-info      state and remaining idle time
+#   tools/bmo --session-end       delete it
+#
+# Sessions need an instance built with /api/sessions; older builds 404 and the
+# script says so. Idle sessions expire after 30 minutes, and only one query may
+# run in a session at a time.
+#
+# Flags combine with -f, e.g. tools/bmo -S -f queries/indicators.bmo
 #
 # The instance address comes from BMO_URL. ngrok tunnels change on every
 # restart, so keep it in the environment rather than hardcoded here.
@@ -18,13 +31,52 @@ set -euo pipefail
 
 mode=json
 file=
+session=0
+# One session per instance, keyed by URL so switching instances cannot reuse a
+# stale id from a different server.
+sid_file="${TMPDIR:-/tmp}/bmo-session-$(printf '%s' "$BMO_URL" | cksum | cut -d' ' -f1)"
+
+curl_common=(-sS --max-time 1800 -H 'ngrok-skip-browser-warning: 1')
+
+session_create() {
+  local body
+  body=$(curl "${curl_common[@]}" -X POST "$BMO_URL/api/sessions" -H 'Content-Length: 0')
+  if ! printf '%s' "$body" | grep -q '"id"'; then
+    echo "this instance has no session support: $body" >&2
+    exit 1
+  fi
+  printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
+}
+
+session_id() {
+  if [ -f "$sid_file" ]; then
+    local id; id=$(cat "$sid_file")
+    # an expired or deleted session 404s; make a new one rather than failing
+    if curl "${curl_common[@]}" -o /dev/null -w '%{http_code}' \
+         "$BMO_URL/api/sessions/$id" | grep -q '^200$'; then
+      printf '%s' "$id"; return
+    fi
+  fi
+  session_create | tee "$sid_file"
+}
 
 while [ $# -gt 0 ]; do
   case $1 in
     -t) mode=typed; shift ;;
     -s) mode=sse;   shift ;;
     -r) mode=raw;   shift ;;
+    -S) session=1;  shift ;;
     -f) file=$2;    shift 2 ;;
+    --session-new)
+      rm -f "$sid_file"; id=$(session_create); printf '%s' "$id" > "$sid_file"
+      echo "session ${id:0:12}…"; exit 0 ;;
+    --session-info)
+      [ -f "$sid_file" ] || { echo "no session"; exit 0; }
+      curl "${curl_common[@]}" "$BMO_URL/api/sessions/$(cat "$sid_file")"; echo; exit 0 ;;
+    --session-end)
+      [ -f "$sid_file" ] || { echo "no session"; exit 0; }
+      curl "${curl_common[@]}" -X DELETE "$BMO_URL/api/sessions/$(cat "$sid_file")" >/dev/null
+      rm -f "$sid_file"; echo "session ended"; exit 0 ;;
     --) shift; break ;;
     *)  break ;;
   esac
@@ -33,12 +85,17 @@ done
 if [ -n "$file" ]; then
   query=$(cat "$file")
 else
-  query=${1:?usage: tools/bmo [-t|-s|-r] [-f file | "query"]}
+  query=${1:?usage: tools/bmo [-t|-s|-r|-S] [-f file | "query"]}
 fi
 
-# ngrok's free tier serves a browser interstitial unless this header is present.
-common=(-sS --max-time 1800 -H 'ngrok-skip-browser-warning: 1'
-        -X POST "$BMO_URL/api/run" --data-raw "$query")
+if [ "$session" = 1 ]; then
+  path="/api/sessions/$(session_id)/run"
+else
+  path="/api/run"
+fi
+
+# ngrok's free tier serves a browser interstitial unless that header is present.
+common=("${curl_common[@]}" -X POST "$BMO_URL$path" --data-raw "$query")
 
 case $mode in
   sse)

@@ -46,6 +46,7 @@ queries/strategy-engine.bmo      parameterized backtest, strategies as values
 queries/bybit-perp-scan.bmo      Bybit USDT perp screen, ATR-sized
 queries/factor-validation.bmo    do the screen factors predict anything?
 queries/factor-robustness.bmo    same factors, split by time
+queries/cross-sectional-factor.bmo  the one factor that survived
 docs/trading-notes.md            what the screen survived, and what it did not
 docs/bybit-connect.md            OAuth AI sub-account setup, and the geo-block
 tools/bybit-api                  signed Bybit V5 client, dry-run by default
@@ -98,6 +99,25 @@ tools/bmo -t '10 / 3'                # typed — exact numbers as strings
 tools/bmo -s 'wait(5s)'              # stream lifecycle events
 tools/bmo -r '@docs "rolling", kind: "stage"'   # markdown contract
 ```
+
+### Sessions
+
+Newer instances keep bindings between requests, so expensive data is fetched
+once and every later query reuses it:
+
+```bash
+tools/bmo --session-new
+tools/bmo -S 'panel: <expensive fetch>; panel::count()'   # 2202 ms
+tools/bmo -S 'panel | <a hypothesis>'                     #    2 ms
+tools/bmo -S '$ | take 5'        # $ is the previous successful output
+tools/bmo --session-info         # state and remaining idle time
+tools/bmo --session-end
+```
+
+Idle sessions expire after 30 minutes and only one query runs in a session at
+a time. Older builds have no `/api/sessions`; the script says so rather than
+failing obscurely. This is what made testing six factor hypotheses take 635 ms
+instead of six refetches.
 
 Every query in `queries/` runs against a live instance and returns rows; they
 are meant to be read as worked examples as much as run.

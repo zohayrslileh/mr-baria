@@ -128,14 +128,57 @@ forward window, consecutive observations share five bars, so 11,424 rows carry
 closer to 1,900 independent observations. Significance is weaker than the row
 count suggests.
 
+## One thing did survive: cross-sectional momentum
+
+Every *absolute* price factor flips sign between halves — trend, momentum and
+the weekly measure alike, at both the 24h and 48h horizon. That is not a
+weighting problem; it is the market move itself reversing regime, and it sits
+inside every one of them.
+
+Subtracting the cross-sectional mean at each timestamp removes exactly that
+shared component. What remains is relative performance, and it holds its sign:
+
+| factor | all | half A | half B |
+|---|---|---|---|
+| trend, absolute | −0.021 | **−0.203** | **+0.014** |
+| momentum, absolute | −0.008 | **−0.122** | **+0.069** |
+| trend, relative | +0.112 | +0.029 | +0.158 |
+| momentum, relative | +0.113 | +0.030 | +0.155 |
+
+Sorting the cross-section into terciles by relative momentum, the mean forward
+*relative* move in ATR units:
+
+| tercile | all | half A | half B |
+|---|---|---|---|
+| weakest | −0.052 | +0.002 | −0.105 |
+| middle | −0.051 | −0.025 | −0.077 |
+| strongest | +0.103 | +0.023 | +0.182 |
+| **top − bottom** | **+0.154** | **+0.021** | **+0.287** |
+
+Same direction in both halves — the first thing here that has managed that.
+
+**But read the magnitudes before getting excited.** Half B's +0.287 ATR is
+about 0.57% per 24h on a 2% ATR, which clears costs. Half A's +0.021 ATR is
+roughly 0.04%, against a round trip that costs 0.11% per leg — and this is a
+two-leg trade, long the top and short the bottom, so about 0.22%. In that half
+the edge does not pay for itself. Direction is stable; size is not.
+
+Three further caveats. Overlapping windows mean 11,352 rows carry closer to
+1,900 independent observations. The demeaning was chosen after watching the
+absolute factors fail, so some selection crept in. And a market-neutral pair
+needs two positions, which on a $500 account is two lots of minimum size.
+
+Worth pursuing, not worth betting on yet. `queries/cross-sectional-factor.bmo`
+reproduces all of it.
+
 ## What would be worth testing next
 
 - Funding and open-interest factors on their **history** rather than the
   current snapshot — both are available per-bar and neither was validated
   above.
-- Cross-sectional ranking (long the top decile, short the bottom, market
-  neutral) rather than directional calls, which removes the market beta that
-  dominates the current result.
+- Whether the tercile spread survives realistic costs in the weak regime —
+  the question that decides whether cross-sectional momentum is tradeable at
+  all, and one only live fills can answer.
 - Longer horizons. Everything above is 24h and 48h; a 4h series supports a
   week or more.
 - A funding-carry basis trade, which does not depend on predicting price at
